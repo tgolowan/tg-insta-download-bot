@@ -31,5 +31,7 @@ ERROR_MESSAGES = {
     'file_too_large': '❌ File is too large to send via Telegram (max 50MB).',
     'unsupported_type': '❌ This type of Instagram content is not supported.',
     'rate_limited': '⚠️ Instagram rate limit reached. Please try again later.',
-    'private_account': '❌ Cannot access private Instagram accounts.',
+    'private_account': '❌ Cannot access private Instagram accounts. Try logging in or check if the post is public.',
+    'connection_error': '❌ Connection error. Please check your internet and try again.',
+    'forbidden': '❌ Access forbidden. This post might be private or require authentication.',
 }

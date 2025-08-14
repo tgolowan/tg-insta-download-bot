@@ -54,8 +54,14 @@ class InstagramDownloader:
                 return
             self.loader.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
             logger.info("Logged in to Instagram session")
+        except instaloader.exceptions.BadCredentialsException:
+            logger.error("Invalid Instagram credentials. Please check username/password.")
+        except instaloader.exceptions.TwoFactorAuthRequiredException:
+            logger.error("Two-factor authentication required. Please disable 2FA or use app-specific password.")
+        except instaloader.exceptions.ConnectionException as e:
+            logger.warning(f"Connection error during login: {e}")
         except Exception as err:
-            logger.warning(f"Login skipped/failed: {err}")
+            logger.warning(f"Login failed: {err}")
 
     def _respect_rate_limits(self) -> None:
         """Throttle requests and respect cool-downs after 429s."""
@@ -150,15 +156,27 @@ class InstagramDownloader:
             
         except instaloader.exceptions.PrivateProfileNotFollowedException:
             return False, ERROR_MESSAGES['private_account'], []
-        except instaloader.exceptions.QueryBadStatusException as e:
-            # Trigger cooldown on 429
-            if "429" in str(e) or "Too Many Requests" in str(e):
-                self._cooldown_until_epoch = time.time() + RATE_LIMIT_COOLDOWN_SECONDS
-                logger.warning(
-                    f"Received 429. Entering cooldown for {RATE_LIMIT_COOLDOWN_SECONDS}s"
-                )
-                return False, ERROR_MESSAGES['rate_limited'], []
+        except instaloader.exceptions.TooManyRequestsException as e:
+            # Trigger cooldown on rate limit
+            self._cooldown_until_epoch = time.time() + RATE_LIMIT_COOLDOWN_SECONDS
+            logger.warning(
+                f"Rate limited by Instagram. Entering cooldown for {RATE_LIMIT_COOLDOWN_SECONDS}s"
+            )
+            return False, ERROR_MESSAGES['rate_limited'], []
+        except instaloader.exceptions.QueryReturnedForbiddenException as e:
+            # Handle 401/403 errors - might need login
+            if "401" in str(e) or "403" in str(e):
+                logger.warning("Access forbidden. This might be a private post or require login.")
+                return False, ERROR_MESSAGES['private_account'], []
             return False, ERROR_MESSAGES['download_failed'], []
+        except instaloader.exceptions.QueryReturnedBadRequestException as e:
+            # Handle other bad request errors
+            logger.error(f"Bad request to Instagram: {e}")
+            return False, ERROR_MESSAGES['download_failed'], []
+        except instaloader.exceptions.ConnectionException as e:
+            # Handle connection issues
+            logger.error(f"Connection error: {e}")
+            return False, ERROR_MESSAGES['connection_error'], []
         except Exception as e:
             logger.error(f"Error downloading post: {e}")
             return False, ERROR_MESSAGES['download_failed'], []
