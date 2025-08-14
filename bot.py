@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 import os
+import time
 from typing import List, Dict
 from aiohttp import web
 import threading
@@ -259,18 +260,32 @@ I can download media from Instagram posts and reels!
         })
     
     def run(self):
-        """Start the bot with web server."""
+        """Start the bot with web server and supervise unexpected stops."""
         logger.info("Starting Instagram Download Bot...")
-        
+
         # Start web server in a separate thread
         def run_web_server():
             asyncio.run(self.start_web_server())
-        
+
         web_thread = threading.Thread(target=run_web_server, daemon=True)
         web_thread.start()
-        
-        # Start the bot
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+        restart_on_stop = os.getenv('RESTART_ON_STOP', 'true').lower() in ['1', 'true', 'yes']
+
+        while True:
+            try:
+                # This blocks until a stop signal is received or an unrecoverable error occurs
+                self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+            except Exception as e:
+                logger.error(f"Bot crashed with exception: {e}")
+
+            if restart_on_stop:
+                logger.warning("Application stopped. Restarting in 5 seconds...")
+                time.sleep(5)
+                continue
+            else:
+                logger.info("Application stopped. Exiting.")
+                break
 
 def main():
     """Main function to run the bot."""
