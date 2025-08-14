@@ -13,7 +13,6 @@ import re
 import os
 import time
 from typing import List, Dict
-from aiohttp import web
 import threading
 
 # Set up logging
@@ -236,38 +235,97 @@ I can download media from Instagram posts and reels!
                 text="❌ An error occurred. Please try again later."
             )
     
-    async def start_web_server(self):
-        """Start web server for health checks."""
-        app = web.Application()
-        app.router.add_get('/health', self.health_check)
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        
-        site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8000)))
-        await site.start()
-        
-        self.web_app = app
-        self.web_runner = runner
-        logger.info(f"Web server started on port {os.environ.get('PORT', 8000)}")
+    def start_web_server(self):
+        """Start web server for health checks using Flask (synchronous)."""
+        try:
+            from flask import Flask, jsonify
+            import threading
+            
+            app = Flask(__name__)
+            
+            @app.route('/health')
+            def health_check():
+                return jsonify({
+                    'status': 'healthy',
+                    'bot': 'running',
+                    'timestamp': time.time()
+                })
+            
+            @app.route('/')
+            def root():
+                return jsonify({
+                    'status': 'Instagram Download Bot is running',
+                    'health': '/health'
+                })
+            
+            def run_flask():
+                port = int(os.environ.get('PORT', 8000))
+                app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+            
+            # Start Flask in a separate thread
+            flask_thread = threading.Thread(target=run_flask, daemon=True)
+            flask_thread.start()
+            
+            logger.info(f"Web server started on port {os.environ.get('PORT', 8000)}")
+            return True
+            
+        except ImportError:
+            logger.warning("Flask not available, using simple HTTP server")
+            return self._start_simple_server()
+        except Exception as e:
+            logger.error(f"Failed to start web server: {e}")
+            return False
     
-    async def health_check(self, request):
-        """Health check endpoint for Railway."""
-        return web.json_response({
-            'status': 'healthy',
-            'bot': 'running',
-            'timestamp': asyncio.get_event_loop().time()
-        })
+    def _start_simple_server(self):
+        """Fallback to simple HTTP server if Flask fails."""
+        try:
+            import http.server
+            import socketserver
+            
+            class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == '/health':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        response = {
+                            'status': 'healthy',
+                            'bot': 'running',
+                            'timestamp': time.time()
+                        }
+                        self.wfile.write(str(response).encode())
+                    else:
+                        self.send_response(200)
+                        self.send_header('Content-type', 'text/plain')
+                        self.end_headers()
+                        self.wfile.write(b'Instagram Download Bot is running\nHealth: /health')
+                
+                def log_message(self, format, *args):
+                    # Suppress logging for health checks
+                    pass
+            
+            def run_simple_server():
+                port = int(os.environ.get('PORT', 8000))
+                with socketserver.TCPServer(("0.0.0.0", port), HealthCheckHandler) as httpd:
+                    httpd.serve_forever()
+            
+            # Start simple server in a separate thread
+            server_thread = threading.Thread(target=run_simple_server, daemon=True)
+            server_thread.start()
+            
+            logger.info(f"Simple HTTP server started on port {os.environ.get('PORT', 8000)}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start simple server: {e}")
+            return False
     
     def run(self):
         """Start the bot with web server and supervise unexpected stops."""
         logger.info("Starting Instagram Download Bot...")
 
         # Start web server in a separate thread
-        def run_web_server():
-            asyncio.run(self.start_web_server())
-
-        web_thread = threading.Thread(target=run_web_server, daemon=True)
+        web_thread = threading.Thread(target=self.start_web_server, daemon=True)
         web_thread.start()
 
         restart_on_stop = os.getenv('RESTART_ON_STOP', 'true').lower() in ['1', 'true', 'yes']

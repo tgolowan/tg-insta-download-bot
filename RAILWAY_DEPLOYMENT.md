@@ -84,8 +84,9 @@ DOWNLOAD_PATH=./downloads
 ## Railway-Specific Features
 
 ### Health Checks
-- Railway automatically monitors the `/health` endpoint
-- Bot will restart if health checks fail
+- Bot provides a `/health` endpoint for monitoring
+- Uses Flask for reliable web server functionality
+- Automatic fallback to simple HTTP server if Flask unavailable
 - Health endpoint returns bot status and timestamp
 
 ### Auto-Restart

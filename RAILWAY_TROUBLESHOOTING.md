@@ -24,7 +24,14 @@
 - Bot will automatically restart after 5 seconds
 - Check Railway logs for underlying errors
 
-### 4. **Exception Errors**
+### 4. **Health Check Failures**
+**Problem**: "Service unavailable" health check errors
+**Solution**: ✅ **FIXED** - Replaced async web server with synchronous Flask/HTTP server:
+- More reliable health check endpoint
+- Better Railway compatibility
+- Automatic fallback to simple HTTP server
+
+### 5. **Exception Errors**
 **Problem**: `QueryBadStatusException` not found
 **Solution**: ✅ **FIXED** - Updated to use correct exception names:
 - `TooManyRequestsException` for rate limits
