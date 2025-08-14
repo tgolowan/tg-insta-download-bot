@@ -1,11 +1,21 @@
 import os
 import re
+import time
 import instaloader
 import requests
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse
 import logging
-from config import INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD, DOWNLOAD_PATH, MAX_FILE_SIZE, ERROR_MESSAGES
+from config import (
+    INSTAGRAM_USERNAME,
+    INSTAGRAM_PASSWORD,
+    IG_LOGIN_ON_START,
+    DOWNLOAD_PATH,
+    MAX_FILE_SIZE,
+    MIN_REQUEST_INTERVAL_SECONDS,
+    RATE_LIMIT_COOLDOWN_SECONDS,
+    ERROR_MESSAGES,
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -13,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class InstagramDownloader:
     def __init__(self):
-        """Initialize Instagram downloader with session."""
+        """Initialize Instagram downloader with session and rate-limit controls."""
         self.loader = instaloader.Instaloader(
             download_pictures=False,
             download_videos=False,
@@ -23,17 +33,42 @@ class InstagramDownloader:
             save_metadata=False,
             compress_json=False
         )
+        # Track last request time and a cool-down until timestamp
+        self._last_request_epoch: float = 0.0
+        self._cooldown_until_epoch: float = 0.0
         
         # Create download directory
         os.makedirs(DOWNLOAD_PATH, exist_ok=True)
         
-        # Login if credentials are provided
-        if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD:
-            try:
-                self.loader.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-                logger.info("Successfully logged into Instagram")
-            except Exception as e:
-                logger.warning(f"Failed to login to Instagram: {e}")
+        # Optional login on start; default is disabled to avoid 429s
+        if IG_LOGIN_ON_START and not IG_DISABLE_LOGIN and INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD:
+            self._login_if_needed(force=True)
+
+    def _login_if_needed(self, force: bool = False) -> None:
+        """Login only when necessary. Avoid eager login to reduce 429s."""
+        try:
+            if IG_DISABLE_LOGIN or not (INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD):
+                return
+            # If already logged in and no force requested, skip
+            if hasattr(self.loader.context, "is_logged_in") and self.loader.context.is_logged_in and not force:
+                return
+            self.loader.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
+            logger.info("Logged in to Instagram session")
+        except Exception as err:
+            logger.warning(f"Login skipped/failed: {err}")
+
+    def _respect_rate_limits(self) -> None:
+        """Throttle requests and respect cool-downs after 429s."""
+        now = time.time()
+        if now < self._cooldown_until_epoch:
+            sleep_for = max(0.0, self._cooldown_until_epoch - now)
+            logger.warning(f"Rate-limit cooldown active. Sleeping for {sleep_for:.0f}s")
+            time.sleep(sleep_for)
+        # Enforce minimum interval between requests
+        since_last = now - self._last_request_epoch
+        if since_last < MIN_REQUEST_INTERVAL_SECONDS:
+            time.sleep(MIN_REQUEST_INTERVAL_SECONDS - since_last)
+        self._last_request_epoch = time.time()
     
     def is_valid_instagram_url(self, url: str) -> bool:
         """Check if the URL is a valid Instagram post URL."""
@@ -73,8 +108,16 @@ class InstagramDownloader:
             if not shortcode:
                 return False, ERROR_MESSAGES['invalid_link'], []
             
-            # Get post
-            post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+            # Login lazily only when necessary (e.g., private posts)
+            # Respect throttle before making the request
+            self._respect_rate_limits()
+            try:
+                post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+            except instaloader.exceptions.QueryReturnedNotFoundException:
+                # Try logging in and retry once in case it is private but accessible
+                self._login_if_needed(force=False)
+                self._respect_rate_limits()
+                post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
             
             media_files = []
             
@@ -107,8 +150,15 @@ class InstagramDownloader:
             
         except instaloader.exceptions.PrivateProfileNotFollowedException:
             return False, ERROR_MESSAGES['private_account'], []
-        except instaloader.exceptions.QueryBadStatusException:
-            return False, ERROR_MESSAGES['rate_limited'], []
+        except instaloader.exceptions.QueryBadStatusException as e:
+            # Trigger cooldown on 429
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                self._cooldown_until_epoch = time.time() + RATE_LIMIT_COOLDOWN_SECONDS
+                logger.warning(
+                    f"Received 429. Entering cooldown for {RATE_LIMIT_COOLDOWN_SECONDS}s"
+                )
+                return False, ERROR_MESSAGES['rate_limited'], []
+            return False, ERROR_MESSAGES['download_failed'], []
         except Exception as e:
             logger.error(f"Error downloading post: {e}")
             return False, ERROR_MESSAGES['download_failed'], []

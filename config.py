@@ -12,10 +12,14 @@ if not BOT_TOKEN:
 # Instagram configuration
 INSTAGRAM_USERNAME = os.getenv('INSTAGRAM_USERNAME', '')
 INSTAGRAM_PASSWORD = os.getenv('INSTAGRAM_PASSWORD', '')
+IG_LOGIN_ON_START = os.getenv('IG_LOGIN_ON_START', 'false').lower() in ['1', 'true', 'yes']
+IG_DISABLE_LOGIN = os.getenv('IG_DISABLE_LOGIN', 'false').lower() in ['1', 'true', 'yes']
 
 # Download settings
 DOWNLOAD_PATH = os.getenv('DOWNLOAD_PATH', './downloads')
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB limit for Telegram
+MIN_REQUEST_INTERVAL_SECONDS = int(os.getenv('MIN_REQUEST_INTERVAL_SECONDS', '8'))  # throttle between requests
+RATE_LIMIT_COOLDOWN_SECONDS = int(os.getenv('RATE_LIMIT_COOLDOWN_SECONDS', '600'))  # wait after 429
 
 # Supported Instagram content types
 SUPPORTED_TYPES = ['image', 'video', 'carousel']
