@@ -10,6 +10,7 @@ from config import (
     INSTAGRAM_USERNAME,
     INSTAGRAM_PASSWORD,
     IG_LOGIN_ON_START,
+    IG_DISABLE_LOGIN,
     DOWNLOAD_PATH,
     MAX_FILE_SIZE,
     MIN_REQUEST_INTERVAL_SECONDS,
@@ -36,6 +37,8 @@ class InstagramDownloader:
         # Track last request time and a cool-down until timestamp
         self._last_request_epoch: float = 0.0
         self._cooldown_until_epoch: float = 0.0
+        # Track consecutive 401 errors
+        self._consecutive_401_errors: int = 0
         
         # Create download directory
         os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -165,18 +168,29 @@ class InstagramDownloader:
             except instaloader.exceptions.ConnectionException as e:
                 # Handle connection issues
                 if "401" in str(e):
+                    self._consecutive_401_errors += 1
+                    
                     if IG_DISABLE_LOGIN:
-                        return False, ERROR_MESSAGES['instagram_unavailable'], []
+                        if self._consecutive_401_errors >= 3:
+                            logger.error("Multiple 401 errors received. Instagram may be blocking requests. Consider enabling login or waiting.")
+                            return False, ERROR_MESSAGES['instagram_unavailable'], []
+                        else:
+                            logger.warning(f"Instagram returned 401 (attempt {self._consecutive_401_errors}/3). This post might be private or require authentication.")
+                            return False, ERROR_MESSAGES['instagram_unavailable'], []
                     else:
                         logger.info("Received 401 connection error, attempting login...")
                         self._login_if_needed(force=False)
                         self._respect_rate_limits()
                         try:
                             post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+                            # Reset 401 error counter on success
+                            self._consecutive_401_errors = 0
                         except Exception as login_e:
                             logger.warning(f"Failed to get post even with login: {login_e}")
                             return False, ERROR_MESSAGES['instagram_unavailable'], []
                 else:
+                    # Reset 401 error counter on other connection errors
+                    self._consecutive_401_errors = 0
                     logger.error(f"Connection error: {e}")
                     return False, ERROR_MESSAGES['connection_error'], []
             
@@ -209,6 +223,9 @@ class InstagramDownloader:
             
             if not media_files:
                 return False, ERROR_MESSAGES['download_failed'], []
+            
+            # Reset 401 error counter on successful download
+            self._consecutive_401_errors = 0
             
             return True, f"✅ Successfully downloaded {len(media_files)} media file(s)", media_files
             
