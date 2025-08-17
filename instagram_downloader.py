@@ -89,6 +89,8 @@ class InstagramDownloader:
         # Otherwise, we can only access public content
         return True
     
+
+    
     def is_valid_instagram_url(self, url: str) -> bool:
         """Check if the URL is a valid Instagram post URL."""
         if not url:
@@ -160,6 +162,23 @@ class InstagramDownloader:
                         return False, ERROR_MESSAGES['private_account'], []
                 else:
                     return False, ERROR_MESSAGES['forbidden'], []
+            except instaloader.exceptions.ConnectionException as e:
+                # Handle connection issues
+                if "401" in str(e):
+                    if IG_DISABLE_LOGIN:
+                        return False, ERROR_MESSAGES['instagram_unavailable'], []
+                    else:
+                        logger.info("Received 401 connection error, attempting login...")
+                        self._login_if_needed(force=False)
+                        self._respect_rate_limits()
+                        try:
+                            post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+                        except Exception as login_e:
+                            logger.warning(f"Failed to get post even with login: {login_e}")
+                            return False, ERROR_MESSAGES['instagram_unavailable'], []
+                else:
+                    logger.error(f"Connection error: {e}")
+                    return False, ERROR_MESSAGES['connection_error'], []
             
             if post is None:
                 return False, ERROR_MESSAGES['download_failed'], []
