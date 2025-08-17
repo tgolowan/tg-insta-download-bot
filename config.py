@@ -34,4 +34,5 @@ ERROR_MESSAGES = {
     'private_account': '❌ Cannot access private Instagram accounts. Try logging in or check if the post is public.',
     'connection_error': '❌ Connection error. Please check your internet and try again.',
     'forbidden': '❌ Access forbidden. This post might be private or require authentication.',
+    'instagram_unavailable': '❌ Instagram is currently unavailable. Please try again later.',
 }
