@@ -32,7 +32,9 @@ class InstagramDownloader:
             download_geotags=False,
             download_comments=False,
             save_metadata=False,
-            compress_json=False
+            compress_json=False,
+            max_connection_attempts=3,
+            request_timeout=30
         )
         # Track last request time and a cool-down until timestamp
         self._last_request_epoch: float = 0.0
@@ -55,8 +57,26 @@ class InstagramDownloader:
             # If already logged in and no force requested, skip
             if hasattr(self.loader.context, "is_logged_in") and self.loader.context.is_logged_in and not force:
                 return
+            
+            # Try to load existing session first
+            try:
+                self.loader.load_session_from_file(INSTAGRAM_USERNAME)
+                logger.info("Loaded existing Instagram session")
+                return
+            except FileNotFoundError:
+                logger.info("No existing session found, logging in...")
+            
+            # Perform login
             self.loader.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
-            logger.info("Logged in to Instagram session")
+            logger.info("Successfully logged in to Instagram")
+            
+            # Save session for future use
+            try:
+                self.loader.save_session_to_file()
+                logger.info("Session saved for future use")
+            except Exception as e:
+                logger.warning(f"Failed to save session: {e}")
+                
         except instaloader.exceptions.BadCredentialsException:
             logger.error("Invalid Instagram credentials. Please check username/password.")
         except instaloader.exceptions.TwoFactorAuthRequiredException:
@@ -108,6 +128,28 @@ class InstagramDownloader:
         path = parsed.path
         return '/p/' in path or '/reel/' in path
     
+    def check_post_accessibility(self, shortcode: str) -> tuple[bool, str]:
+        """Check if a post is accessible before attempting download."""
+        try:
+            # Use instaloader's built-in method to check post accessibility
+            post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+            
+            # Check if post is accessible
+            if hasattr(post, 'is_private') and post.is_private:
+                return False, "Post is private"
+            
+            if hasattr(post, 'owner_profile') and post.owner_profile.is_private:
+                return False, "Profile is private"
+            
+            return True, "Post is accessible"
+            
+        except instaloader.exceptions.QueryReturnedNotFoundException:
+            return False, "Post not found"
+        except instaloader.exceptions.QueryReturnedForbiddenException:
+            return False, "Access forbidden (401/403)"
+        except Exception as e:
+            return False, f"Error checking accessibility: {e}"
+    
     def extract_shortcode(self, url: str) -> Optional[str]:
         """Extract shortcode from Instagram URL."""
         if not self.is_valid_instagram_url(url):
@@ -136,63 +178,61 @@ class InstagramDownloader:
             # Respect throttle before making the request
             self._respect_rate_limits()
             
-            # Try to get post without login first
+            # Try to get post using instaloader's built-in retry logic
             post = None
-            try:
-                post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
-            except instaloader.exceptions.QueryReturnedNotFoundException:
-                # Try logging in and retry once in case it is private but accessible
-                if not IG_DISABLE_LOGIN:
-                    self._login_if_needed(force=False)
-                    self._respect_rate_limits()
-                    try:
-                        post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
-                    except Exception as login_e:
-                        logger.warning(f"Failed to get post even with login: {login_e}")
-                        return False, ERROR_MESSAGES['private_account'], []
-                else:
-                    return False, ERROR_MESSAGES['private_account'], []
-            except instaloader.exceptions.QueryReturnedForbiddenException as e:
-                # Handle 401/403 errors - might need login
-                if "401" in str(e) and not IG_DISABLE_LOGIN:
-                    logger.info("Received 401, attempting login...")
-                    self._login_if_needed(force=False)
-                    self._respect_rate_limits()
-                    try:
-                        post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
-                    except Exception as login_e:
-                        logger.warning(f"Failed to get post even with login: {login_e}")
-                        return False, ERROR_MESSAGES['private_account'], []
-                else:
-                    return False, ERROR_MESSAGES['forbidden'], []
-            except instaloader.exceptions.ConnectionException as e:
-                # Handle connection issues
-                if "401" in str(e):
-                    self._consecutive_401_errors += 1
+            max_retries = 2 if not IG_DISABLE_LOGIN else 1
+            
+            for attempt in range(max_retries):
+                try:
+                    post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+                    break  # Success, exit retry loop
                     
-                    if IG_DISABLE_LOGIN:
-                        if self._consecutive_401_errors >= 3:
-                            logger.error("Multiple 401 errors received. Instagram may be blocking requests. Consider enabling login or waiting.")
-                            return False, ERROR_MESSAGES['instagram_unavailable'], []
-                        else:
-                            logger.warning(f"Instagram returned 401 (attempt {self._consecutive_401_errors}/3). This post might be private or require authentication.")
-                            return False, ERROR_MESSAGES['instagram_unavailable'], []
-                    else:
-                        logger.info("Received 401 connection error, attempting login...")
+                except instaloader.exceptions.QueryReturnedNotFoundException:
+                    if attempt == 0 and not IG_DISABLE_LOGIN:
+                        logger.info("Post not found, attempting login...")
                         self._login_if_needed(force=False)
                         self._respect_rate_limits()
-                        try:
-                            post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
-                            # Reset 401 error counter on success
-                            self._consecutive_401_errors = 0
-                        except Exception as login_e:
-                            logger.warning(f"Failed to get post even with login: {login_e}")
+                        continue
+                    else:
+                        return False, ERROR_MESSAGES['private_account'], []
+                        
+                except instaloader.exceptions.QueryReturnedForbiddenException as e:
+                    if "401" in str(e) and attempt == 0 and not IG_DISABLE_LOGIN:
+                        logger.info("Received 401, attempting login...")
+                        self._login_if_needed(force=False)
+                        self._respect_rate_limits()
+                        continue
+                    else:
+                        return False, ERROR_MESSAGES['forbidden'], []
+                        
+                except instaloader.exceptions.ConnectionException as e:
+                    if "401" in str(e):
+                        self._consecutive_401_errors += 1
+                        
+                        if IG_DISABLE_LOGIN:
+                            if self._consecutive_401_errors >= 3:
+                                logger.error("Multiple 401 errors received. Instagram may be blocking requests.")
+                                return False, ERROR_MESSAGES['instagram_unavailable'], []
+                            else:
+                                logger.warning(f"Instagram returned 401 (attempt {self._consecutive_401_errors}/3).")
+                                return False, ERROR_MESSAGES['instagram_unavailable'], []
+                        elif attempt == 0:
+                            logger.info("Received 401, attempting login...")
+                            self._login_if_needed(force=False)
+                            self._respect_rate_limits()
+                            continue
+                        else:
                             return False, ERROR_MESSAGES['instagram_unavailable'], []
-                else:
-                    # Reset 401 error counter on other connection errors
-                    self._consecutive_401_errors = 0
-                    logger.error(f"Connection error: {e}")
-                    return False, ERROR_MESSAGES['connection_error'], []
+                    else:
+                        self._consecutive_401_errors = 0
+                        logger.error(f"Connection error: {e}")
+                        return False, ERROR_MESSAGES['connection_error'], []
+                        
+                except Exception as e:
+                    logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
+                    if attempt == max_retries - 1:
+                        return False, ERROR_MESSAGES['download_failed'], []
+                    continue
             
             if post is None:
                 return False, ERROR_MESSAGES['download_failed'], []
