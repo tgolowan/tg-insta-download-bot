@@ -76,6 +76,19 @@ class InstagramDownloader:
             time.sleep(MIN_REQUEST_INTERVAL_SECONDS - since_last)
         self._last_request_epoch = time.time()
     
+    def _can_access_without_login(self) -> bool:
+        """Check if we can access Instagram content without login."""
+        # If login is disabled, we can't access without it
+        if IG_DISABLE_LOGIN:
+            return False
+        
+        # If we have credentials, we can try login
+        if INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD:
+            return True
+        
+        # Otherwise, we can only access public content
+        return True
+    
     def is_valid_instagram_url(self, url: str) -> bool:
         """Check if the URL is a valid Instagram post URL."""
         if not url:
@@ -117,13 +130,39 @@ class InstagramDownloader:
             # Login lazily only when necessary (e.g., private posts)
             # Respect throttle before making the request
             self._respect_rate_limits()
+            
+            # Try to get post without login first
+            post = None
             try:
                 post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
             except instaloader.exceptions.QueryReturnedNotFoundException:
                 # Try logging in and retry once in case it is private but accessible
-                self._login_if_needed(force=False)
-                self._respect_rate_limits()
-                post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+                if not IG_DISABLE_LOGIN:
+                    self._login_if_needed(force=False)
+                    self._respect_rate_limits()
+                    try:
+                        post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+                    except Exception as login_e:
+                        logger.warning(f"Failed to get post even with login: {login_e}")
+                        return False, ERROR_MESSAGES['private_account'], []
+                else:
+                    return False, ERROR_MESSAGES['private_account'], []
+            except instaloader.exceptions.QueryReturnedForbiddenException as e:
+                # Handle 401/403 errors - might need login
+                if "401" in str(e) and not IG_DISABLE_LOGIN:
+                    logger.info("Received 401, attempting login...")
+                    self._login_if_needed(force=False)
+                    self._respect_rate_limits()
+                    try:
+                        post = instaloader.Post.from_shortcode(self.loader.context, shortcode)
+                    except Exception as login_e:
+                        logger.warning(f"Failed to get post even with login: {login_e}")
+                        return False, ERROR_MESSAGES['private_account'], []
+                else:
+                    return False, ERROR_MESSAGES['forbidden'], []
+            
+            if post is None:
+                return False, ERROR_MESSAGES['download_failed'], []
             
             media_files = []
             
