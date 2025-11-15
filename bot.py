@@ -1,19 +1,15 @@
 import asyncio
 import logging
 import re
-from typing import List, Dict
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.constants import ParseMode
-from instagram_downloader import InstagramDownloader
-from config import BOT_TOKEN, ERROR_MESSAGES
-import asyncio
-import logging
-import re
 import os
 import time
 from typing import List, Dict
 import threading
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
+from tiktok_downloader import TikTokDownloader
+from config import BOT_TOKEN, ERROR_MESSAGES
 
 # Set up logging
 logging.basicConfig(
@@ -22,10 +18,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class InstagramDownloadBot:
+class TikTokDownloadBot:
     def __init__(self):
-        """Initialize the bot with Instagram downloader."""
-        self.downloader = InstagramDownloader()
+        """Initialize the bot with TikTok downloader."""
+        self.downloader = TikTokDownloader()
         self.application = Application.builder().token(BOT_TOKEN).build()
         self.setup_handlers()
         self.web_app = None
@@ -38,7 +34,7 @@ class InstagramDownloadBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
         
-        # Message handler for Instagram links
+        # Message handler for TikTok links
         self.application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, 
             self.handle_message
@@ -50,19 +46,19 @@ class InstagramDownloadBot:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
         welcome_message = """
-🤖 **Instagram Download Bot**
+🤖 **TikTok Download Bot**
 
-I can download media from Instagram posts and reels!
+I can download videos from TikTok!
 
 **How to use:**
-1. Simply paste an Instagram link in the chat
-2. I'll automatically detect it and download the media
-3. The media will be sent back to you
+1. Simply paste a TikTok link in the chat
+2. I'll automatically detect it and download the video
+3. The video will be sent back to you
 
 **Supported content:**
-• Single images
-• Single videos  
-• Carousel posts (multiple images/videos)
+• TikTok videos
+• TikTok reels
+• All public TikTok content
 
 **Commands:**
 /help - Show this help message
@@ -82,29 +78,28 @@ I can download media from Instagram posts and reels!
 📖 **Help & Instructions**
 
 **Basic Usage:**
-• Paste any Instagram post or reel link
-• I'll automatically download and send the media back
+• Paste any TikTok video link
+• I'll automatically download and send the video back
 
 **What I can download:**
-✅ Public Instagram posts
-✅ Instagram reels
-✅ Carousel posts (up to 10 items)
-✅ Both images and videos
+✅ Public TikTok videos
+✅ TikTok reels
+✅ All public TikTok content
 
 **Limitations:**
-❌ Private accounts (unless I'm logged in)
-❌ Stories (not supported)
+❌ Private videos (not accessible)
 ❌ Files larger than 50MB
-❌ Rate-limited by Instagram
+❌ Age-restricted content
 
 **Troubleshooting:**
-• Make sure the link is from a public post
-• Try again later if you get rate-limited
+• Make sure the link is from a public video
+• Try again later if download fails
 • Contact admin if issues persist
 
 **Example links:**
-• https://www.instagram.com/p/ABC123/
-• https://instagram.com/reel/XYZ789/
+• https://www.tiktok.com/@username/video/1234567890
+• https://vm.tiktok.com/ABC123/
+• https://tiktok.com/@username/video/1234567890
         """
         
         await update.message.reply_text(
@@ -118,7 +113,7 @@ I can download media from Instagram posts and reels!
 📊 **Bot Status**
 
 **Status:** ✅ Online
-**Instagram Login:** {'✅ Logged in' if self.downloader.loader.context.is_logged_in else '❌ Not logged in'}
+**Platform:** TikTok
 **Download Path:** `./downloads`
 **Max File Size:** 50MB
 
@@ -130,44 +125,63 @@ I can download media from Instagram posts and reels!
             parse_mode=ParseMode.MARKDOWN
         )
     
-    def extract_instagram_links(self, text: str) -> List[str]:
-        """Extract Instagram links from text message."""
-        # Regex pattern for Instagram URLs
-        pattern = r'https?://(?:www\.)?instagram\.com/(?:p|reel)/[a-zA-Z0-9_-]+/?'
-        return re.findall(pattern, text)
+    def extract_tiktok_links(self, text: str) -> List[str]:
+        """Extract TikTok links from text message."""
+        # Regex pattern for TikTok URLs
+        patterns = [
+            r'https?://(?:www\.|vm\.|vt\.|m\.)?tiktok\.com/[^\s]+',
+            r'https?://tiktok\.com/@[^\s]+',
+            r'https?://vm\.tiktok\.com/[a-zA-Z0-9]+',
+            r'https?://vt\.tiktok\.com/[a-zA-Z0-9]+',
+        ]
+        
+        links = []
+        for pattern in patterns:
+            found = re.findall(pattern, text)
+            links.extend(found)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_links = []
+        for link in links:
+            if link not in seen:
+                seen.add(link)
+                unique_links.append(link)
+        
+        return unique_links
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle incoming messages and detect Instagram links."""
+        """Handle incoming messages and detect TikTok links."""
         message = update.message
         text = message.text
         
         if not text:
             return
         
-        # Extract Instagram links
-        instagram_links = self.extract_instagram_links(text)
+        # Extract TikTok links
+        tiktok_links = self.extract_tiktok_links(text)
         
-        if not instagram_links:
+        if not tiktok_links:
             return
         
-        # Process each Instagram link
-        for link in instagram_links:
-            await self.process_instagram_link(update, context, link)
+        # Process each TikTok link
+        for link in tiktok_links:
+            await self.process_tiktok_link(update, context, link)
     
-    async def process_instagram_link(self, update: Update, context: ContextTypes.DEFAULT_TYPE, link: str):
-        """Process a single Instagram link and download media."""
+    async def process_tiktok_link(self, update: Update, context: ContextTypes.DEFAULT_TYPE, link: str):
+        """Process a single TikTok link and download media."""
         chat_id = update.effective_chat.id
         message = update.message
         
         # Send processing message
         processing_msg = await context.bot.send_message(
             chat_id=chat_id,
-            text=f"🔄 Processing Instagram link...\n{link}"
+            text=f"🔄 Processing TikTok link...\n{link}"
         )
         
         try:
-            # Download the post
-            success, message_text, media_files = self.downloader.download_post(link)
+            # Download the video
+            success, message_text, media_files = self.downloader.download_video(link)
             
             if not success:
                 await context.bot.edit_message_text(
@@ -191,7 +205,7 @@ I can download media from Instagram posts and reels!
             self.downloader.cleanup_files(media_files)
             
         except Exception as e:
-            logger.error(f"Error processing Instagram link: {e}")
+            logger.error(f"Error processing TikTok link: {e}")
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=processing_msg.message_id,
@@ -202,17 +216,15 @@ I can download media from Instagram posts and reels!
         """Send downloaded media files to the chat."""
         for media in media_files:
             try:
-                if media['type'] == 'image':
-                    await context.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=open(media['file_path'], 'rb'),
-                        caption=f"📸 Instagram Image\nSize: {media['file_size'] / 1024 / 1024:.1f}MB"
-                    )
-                elif media['type'] == 'video':
+                if media['type'] == 'video':
+                    title = media.get('title', 'TikTok Video')
+                    duration = media.get('duration', 0)
+                    duration_text = f"Duration: {duration}s" if duration > 0 else ""
+                    
                     await context.bot.send_video(
                         chat_id=chat_id,
                         video=open(media['file_path'], 'rb'),
-                        caption=f"🎥 Instagram Video\nSize: {media['file_size'] / 1024 / 1024:.1f}MB"
+                        caption=f"🎥 {title}\nSize: {media['file_size'] / 1024 / 1024:.1f}MB\n{duration_text}".strip()
                     )
                 
                 # Small delay to avoid flooding
@@ -222,7 +234,7 @@ I can download media from Instagram posts and reels!
                 logger.error(f"Error sending media file: {e}")
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"❌ Failed to send media file: {media['file_path']}"
+                    text=f"❌ Failed to send media file: {media.get('file_path', 'unknown')}"
                 )
     
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,7 +334,7 @@ I can download media from Instagram posts and reels!
     
     def run(self):
         """Start the bot with web server and supervise unexpected stops."""
-        logger.info("Starting Instagram Download Bot...")
+        logger.info("Starting TikTok Download Bot...")
 
         # Start web server in a separate thread
         web_thread = threading.Thread(target=self.start_web_server, daemon=True)
@@ -348,7 +360,7 @@ I can download media from Instagram posts and reels!
 def main():
     """Main function to run the bot."""
     try:
-        bot = InstagramDownloadBot()
+        bot = TikTokDownloadBot()
         bot.run()
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
