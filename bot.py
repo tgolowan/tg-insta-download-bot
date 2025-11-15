@@ -173,10 +173,17 @@ I can download videos from TikTok!
         chat_id = update.effective_chat.id
         message = update.message
         
-        # Send processing message
+        # Get message thread ID if message is in a topic/thread (for forum groups)
+        message_thread_id = None
+        if message:
+            # In python-telegram-bot, message_thread_id is available if message is in a topic
+            message_thread_id = getattr(message, 'message_thread_id', None)
+        
+        # Send processing message in the same topic/thread
         processing_msg = await context.bot.send_message(
             chat_id=chat_id,
-            text=f"🔄 Processing TikTok link...\n{link}"
+            text=f"🔄 Processing TikTok link...\n{link}",
+            message_thread_id=message_thread_id
         )
         
         try:
@@ -198,8 +205,8 @@ I can download videos from TikTok!
                 text=f"✅ {message_text}"
             )
             
-            # Send media files
-            await self.send_media_files(context, chat_id, media_files)
+            # Send media files in the same topic/thread
+            await self.send_media_files(context, chat_id, media_files, message_thread_id)
             
             # Clean up downloaded files
             self.downloader.cleanup_files(media_files)
@@ -212,8 +219,8 @@ I can download videos from TikTok!
                 text="❌ An error occurred while processing the link. Please try again."
             )
     
-    async def send_media_files(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_files: List[Dict]):
-        """Send downloaded media files to the chat."""
+    async def send_media_files(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_files: List[Dict], message_thread_id: int = None):
+        """Send downloaded media files to the chat in the same topic/thread."""
         for media in media_files:
             try:
                 if media['type'] == 'video':
@@ -224,7 +231,8 @@ I can download videos from TikTok!
                     await context.bot.send_video(
                         chat_id=chat_id,
                         video=open(media['file_path'], 'rb'),
-                        caption=f"🎥 {title}\nSize: {media['file_size'] / 1024 / 1024:.1f}MB\n{duration_text}".strip()
+                        caption=f"🎥 {title}\nSize: {media['file_size'] / 1024 / 1024:.1f}MB\n{duration_text}".strip(),
+                        message_thread_id=message_thread_id
                     )
                 
                 # Small delay to avoid flooding
@@ -234,7 +242,8 @@ I can download videos from TikTok!
                 logger.error(f"Error sending media file: {e}")
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"❌ Failed to send media file: {media.get('file_path', 'unknown')}"
+                    text=f"❌ Failed to send media file: {media.get('file_path', 'unknown')}",
+                    message_thread_id=message_thread_id
                 )
     
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
