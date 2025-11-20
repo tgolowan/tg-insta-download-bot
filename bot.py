@@ -6,7 +6,7 @@ import time
 from typing import List, Dict
 import threading
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, EditedMessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 from tiktok_downloader import TikTokDownloader
 from config import BOT_TOKEN, ERROR_MESSAGES
@@ -37,6 +37,12 @@ class TikTokDownloadBot:
         # Message handler for TikTok links
         self.application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, 
+            self.handle_message
+        ))
+        
+        # Handler for edited messages with TikTok links
+        self.application.add_handler(EditedMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
             self.handle_message
         ))
         
@@ -152,8 +158,14 @@ I can download videos from TikTok!
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming messages and detect TikTok links."""
-        message = update.message
-        text = message.text
+        # Handle both regular messages and edited messages
+        message = update.message or update.edited_message
+        
+        if not message:
+            return
+        
+        # Get text from message
+        text = getattr(message, 'text', None)
         
         if not text:
             return
@@ -166,12 +178,19 @@ I can download videos from TikTok!
         
         # Process each TikTok link
         for link in tiktok_links:
-            await self.process_tiktok_link(update, context, link)
+            await self.process_tiktok_link(update, context, link, message)
     
-    async def process_tiktok_link(self, update: Update, context: ContextTypes.DEFAULT_TYPE, link: str):
+    async def process_tiktok_link(self, update: Update, context: ContextTypes.DEFAULT_TYPE, link: str, message=None):
         """Process a single TikTok link and download media."""
         chat_id = update.effective_chat.id
-        message = update.message
+        
+        # Use provided message or get from update
+        if message is None:
+            message = update.message or update.edited_message
+        
+        if not message:
+            logger.warning("No message found in update")
+            return
         
         # Get message thread ID if message is in a topic/thread (for forum groups)
         message_thread_id = None
@@ -251,10 +270,20 @@ I can download videos from TikTok!
         logger.error(f"Update {update} caused error {context.error}")
         
         if update and update.effective_chat:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="❌ An error occurred. Please try again later."
-            )
+            # Get message thread ID if available
+            message_thread_id = None
+            message = update.message or update.edited_message
+            if message:
+                message_thread_id = getattr(message, 'message_thread_id', None)
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ An error occurred. Please try again later.",
+                    message_thread_id=message_thread_id
+                )
+            except Exception as e:
+                logger.error(f"Failed to send error message: {e}")
     
     def start_web_server(self):
         """Start web server for health checks using Flask (synchronous)."""
