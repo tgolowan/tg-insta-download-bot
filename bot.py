@@ -6,7 +6,7 @@ import time
 from typing import List, Dict
 import threading
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, EditedMessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, BaseHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 from tiktok_downloader import TikTokDownloader
 from config import BOT_TOKEN, ERROR_MESSAGES
@@ -34,17 +34,28 @@ class TikTokDownloadBot:
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
         
-        # Message handler for TikTok links
+        # Message handler for TikTok links in regular messages
         self.application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, 
             self.handle_message
         ))
         
-        # Handler for edited messages with TikTok links
-        self.application.add_handler(EditedMessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            self.handle_message
-        ))
+        # Handler for edited messages - create a simple custom handler
+        class EditedMessageHandler(BaseHandler):
+            def __init__(self, callback):
+                super().__init__(callback)
+            
+            def check_update(self, update: Update) -> bool:
+                """Check if update contains an edited message with text."""
+                if not update.edited_message:
+                    return False
+                if not update.edited_message.text:
+                    return False
+                if update.edited_message.text.startswith('/'):
+                    return False
+                return True
+        
+        self.application.add_handler(EditedMessageHandler(self.handle_message))
         
         # Error handler
         self.application.add_error_handler(self.error_handler)
