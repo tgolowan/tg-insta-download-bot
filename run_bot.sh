@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Instagram Download Bot Startup Script
+# TikTok Download Bot Startup Script
 
-echo "🚀 Starting Instagram Download Bot..."
+echo "🚀 Starting TikTok Download Bot..."
 
 # Check if Python is installed
 if ! command -v python3 &> /dev/null; then
@@ -28,7 +28,7 @@ pip install -r requirements.txt
 if [ ! -f ".env" ]; then
     echo "⚠️  .env file not found. Creating from template..."
     cp env.example .env
-    echo "📝 Please edit .env file with your bot token and Instagram credentials."
+    echo "📝 Please edit .env file with your bot token."
     echo "   Then run this script again."
     exit 1
 fi

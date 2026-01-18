@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for Instagram Download Bot
+Test script for TikTok Download Bot
 Run this to test individual components before starting the full bot
 """
 
@@ -21,10 +21,10 @@ def test_imports():
         return False
     
     try:
-        import instaloader
-        print("✅ instaloader imported successfully")
+        import yt_dlp
+        print("✅ yt-dlp imported successfully")
     except ImportError as e:
-        print(f"❌ Failed to import instaloader: {e}")
+        print(f"❌ Failed to import yt-dlp: {e}")
         return False
     
     try:
@@ -54,9 +54,9 @@ def test_config():
         print(f"❌ Failed to load configuration: {e}")
         return False
 
-def test_instagram_downloader():
-    """Test Instagram downloader initialization."""
-    print("\n🔍 Testing Instagram downloader...")
+def test_tiktok_downloader():
+    """Test TikTok downloader initialization."""
+    print("\n🔍 Testing TikTok downloader...")
     
     try:
         # Ensure BOT_TOKEN is set for testing
@@ -64,26 +64,26 @@ def test_instagram_downloader():
         if 'BOT_TOKEN' not in os.environ:
             os.environ['BOT_TOKEN'] = 'test_token_for_testing'
         
-        from instagram_downloader import InstagramDownloader
-        downloader = InstagramDownloader()
-        print("✅ Instagram downloader initialized successfully")
+        from tiktok_downloader import TikTokDownloader
+        downloader = TikTokDownloader()
+        print("✅ TikTok downloader initialized successfully")
         
         # Test URL validation
         test_urls = [
-            "https://www.instagram.com/p/ABC123/",
-            "https://instagram.com/reel/XYZ789/",
-            "https://example.com/not-instagram",
+            "https://www.tiktok.com/@username/video/1234567890",
+            "https://vm.tiktok.com/ABC123/",
+            "https://example.com/not-tiktok",
             "invalid-url"
         ]
         
         for url in test_urls:
-            is_valid = downloader.is_valid_instagram_url(url)
+            is_valid = downloader.is_valid_tiktok_url(url)
             status = "✅" if is_valid else "❌"
             print(f"   {status} {url}")
         
         return True
     except Exception as e:
-        print(f"❌ Failed to initialize Instagram downloader: {e}")
+        print(f"❌ Failed to initialize TikTok downloader: {e}")
         return False
 
 def test_bot_initialization():
@@ -96,7 +96,7 @@ def test_bot_initialization():
         if 'BOT_TOKEN' not in os.environ:
             os.environ['BOT_TOKEN'] = 'test_token_for_testing'
         
-        from bot import InstagramDownloadBot
+        from bot import TikTokDownloadBot
         # Don't actually start the bot, just test initialization
         print("✅ Bot class imported successfully")
         return True
@@ -118,22 +118,16 @@ def test_environment():
         print("⚠️  BOT_TOKEN not set or using default value")
         print("   Please set BOT_TOKEN in your .env file")
     
-    instagram_username = os.getenv('INSTAGRAM_USERNAME')
-    if instagram_username and instagram_username != 'your_instagram_username':
-        print("✅ INSTAGRAM_USERNAME found in environment")
-    else:
-        print("⚠️  INSTAGRAM_USERNAME not set (optional)")
-    
     return True
 
 def main():
     """Run all tests."""
-    print("🚀 Instagram Download Bot - Component Tests\n")
+    print("🚀 TikTok Download Bot - Component Tests\n")
     
     tests = [
         test_imports,
         test_config,
-        test_instagram_downloader,
+        test_tiktok_downloader,
         test_bot_initialization,
         test_environment
     ]
@@ -154,8 +148,7 @@ def main():
         print("🎉 All tests passed! The bot should work correctly.")
         print("\nNext steps:")
         print("1. Set your BOT_TOKEN in the .env file")
-        print("2. Optionally add Instagram credentials")
-        print("3. Run: python bot.py")
+        print("2. Run: python bot.py")
     else:
         print("⚠️  Some tests failed. Please fix the issues before running the bot.")
         return 1

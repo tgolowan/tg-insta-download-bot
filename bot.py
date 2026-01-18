@@ -315,7 +315,7 @@ I can download videos from TikTok!
             @app.route('/')
             def root():
                 return jsonify({
-                    'status': 'Instagram Download Bot is running',
+                    'status': 'TikTok Download Bot is running',
                     'health': '/health'
                 })
             
@@ -359,7 +359,7 @@ I can download videos from TikTok!
                         self.send_response(200)
                         self.send_header('Content-type', 'text/plain')
                         self.end_headers()
-                        self.wfile.write(b'Instagram Download Bot is running\nHealth: /health')
+                        self.wfile.write(b'TikTok Download Bot is running\nHealth: /health')
                 
                 def log_message(self, format, *args):
                     # Suppress logging for health checks

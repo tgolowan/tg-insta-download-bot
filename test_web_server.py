@@ -17,10 +17,10 @@ def test_web_server():
     print("🧪 Testing web server functionality...")
     
     try:
-        from bot import InstagramDownloadBot
+        from bot import TikTokDownloadBot
         
         # Create bot instance
-        bot = InstagramDownloadBot()
+        bot = TikTokDownloadBot()
         
         # Start web server in background
         web_thread = threading.Thread(target=bot.start_web_server, daemon=True)
