@@ -18,8 +18,10 @@ class TikTokDownloader:
         os.makedirs(DOWNLOAD_PATH, exist_ok=True)
         
         # Configure yt-dlp options for TikTok
+        # Prefer vertical formats (height >= width) which is typical for TikTok
+        # Format selector: prefer vertical videos, then best quality MP4
         self.ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'best[height>=width][ext=mp4]/best[ext=mp4]/best',
             'outtmpl': os.path.join(DOWNLOAD_PATH, '%(id)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
@@ -79,21 +81,54 @@ class TikTokDownloader:
             if not self.is_valid_tiktok_url(url):
                 return False, ERROR_MESSAGES['invalid_link'], []
             
-            # Use yt-dlp to download TikTok video
-            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                try:
-                    # Get video info first
+            # First, get video info to determine aspect ratio
+            try:
+                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    
-                    if not info:
-                        return False, ERROR_MESSAGES['download_failed'], []
-                    
-                    # Check file size
-                    filesize = info.get('filesize') or info.get('filesize_approx', 0)
-                    if filesize and filesize > MAX_FILE_SIZE:
-                        return False, ERROR_MESSAGES['file_too_large'], []
-                    
-                    # Download the video
+            except yt_dlp.utils.DownloadError as e:
+                logger.error(f"Info extraction error: {e}")
+                if "Private video" in str(e) or "This video is not available" in str(e):
+                    return False, ERROR_MESSAGES['private_account'], []
+                return False, ERROR_MESSAGES['download_failed'], []
+            except Exception as e:
+                logger.error(f"Error extracting video info: {e}")
+                return False, ERROR_MESSAGES['download_failed'], []
+            
+            if not info:
+                return False, ERROR_MESSAGES['download_failed'], []
+            
+            # Check file size
+            filesize = info.get('filesize') or info.get('filesize_approx', 0)
+            if filesize and filesize > MAX_FILE_SIZE:
+                return False, ERROR_MESSAGES['file_too_large'], []
+            
+            # Check video dimensions and create appropriate format selector
+            width = info.get('width', 0)
+            height = info.get('height', 0)
+            
+            # Create format selector based on video aspect ratio
+            # Prefer formats that match the original video's orientation
+            if width > 0 and height > 0:
+                if height > width:
+                    # Vertical video - prefer vertical formats (typical TikTok format)
+                    format_selector = 'best[height>=width][ext=mp4]/best[ext=mp4]/best'
+                elif width > height:
+                    # Horizontal video - prefer horizontal formats
+                    format_selector = 'best[width>=height][ext=mp4]/best[ext=mp4]/best'
+                else:
+                    # Square video
+                    format_selector = 'best[ext=mp4]/best'
+            else:
+                # Fallback to default format selector
+                format_selector = 'best[height>=width][ext=mp4]/best[ext=mp4]/best'
+            
+            # Create download options with the appropriate format selector
+            download_opts = self.ydl_opts.copy()
+            download_opts['format'] = format_selector
+            
+            # Download the video with the correct format selector
+            with yt_dlp.YoutubeDL(download_opts) as ydl:
+                try:
                     ydl.download([url])
                     
                     # Find the downloaded file
