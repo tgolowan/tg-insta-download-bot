@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import yt_dlp
 import requests
 from typing import List, Dict, Optional, Tuple
@@ -20,13 +21,29 @@ class TikTokDownloader:
         # Configure yt-dlp options for TikTok
         # Prefer vertical formats (height >= width) which is typical for TikTok
         # Format selector: prefer vertical videos, then best quality MP4
+        # Using more lenient format selector to avoid download failures
         self.ydl_opts = {
-            'format': 'best[height>=width][ext=mp4]/best[ext=mp4]/best',
+            'format': 'best[height>=width]/best[ext=mp4]/best',
             'outtmpl': os.path.join(DOWNLOAD_PATH, '%(id)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
             'extract_flat': False,
             'noplaylist': True,
+            # TikTok-specific options
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'referer': 'https://www.tiktok.com/',
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Referer': 'https://www.tiktok.com/',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+            },
+            # Retry options
+            'retries': 3,
+            'fragment_retries': 3,
+            'ignoreerrors': False,
         }
     
     def is_valid_tiktok_url(self, url: str) -> bool:
@@ -86,13 +103,29 @@ class TikTokDownloader:
                 with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
             except yt_dlp.utils.DownloadError as e:
-                logger.error(f"Info extraction error: {e}")
-                if "Private video" in str(e) or "This video is not available" in str(e):
+                error_msg = str(e)
+                logger.error(f"Info extraction error: {error_msg}")
+                
+                # Provide more specific error messages
+                if "Private video" in error_msg or "This video is not available" in error_msg:
                     return False, ERROR_MESSAGES['private_account'], []
-                return False, ERROR_MESSAGES['download_failed'], []
+                elif "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg.lower():
+                    return False, ERROR_MESSAGES['private_account'], []
+                elif "Video unavailable" in error_msg or "unavailable" in error_msg.lower():
+                    return False, "❌ Video is unavailable. It may have been deleted or is not accessible.", []
+                elif "HTTP Error 403" in error_msg or "403" in error_msg:
+                    return False, "❌ Access forbidden. TikTok may be blocking requests. Please try again later.", []
+                elif "HTTP Error 429" in error_msg or "429" in error_msg or "rate limit" in error_msg.lower():
+                    return False, ERROR_MESSAGES['rate_limited'], []
+                elif "HTTP Error" in error_msg:
+                    return False, f"❌ Connection error: {error_msg[:100]}", []
+                else:
+                    # Return more detailed error for debugging
+                    return False, f"❌ Download failed: {error_msg[:150]}", []
             except Exception as e:
-                logger.error(f"Error extracting video info: {e}")
-                return False, ERROR_MESSAGES['download_failed'], []
+                error_msg = str(e)
+                logger.error(f"Error extracting video info: {error_msg}", exc_info=True)
+                return False, f"❌ Error: {error_msg[:150]}", []
             
             if not info:
                 return False, ERROR_MESSAGES['download_failed'], []
@@ -108,19 +141,20 @@ class TikTokDownloader:
             
             # Create format selector based on video aspect ratio
             # Prefer formats that match the original video's orientation
+            # Use a more lenient format selector to avoid download failures
             if width > 0 and height > 0:
                 if height > width:
                     # Vertical video - prefer vertical formats (typical TikTok format)
-                    format_selector = 'best[height>=width][ext=mp4]/best[ext=mp4]/best'
+                    format_selector = 'best[height>=width]/best[ext=mp4]/best'
                 elif width > height:
                     # Horizontal video - prefer horizontal formats
-                    format_selector = 'best[width>=height][ext=mp4]/best[ext=mp4]/best'
+                    format_selector = 'best[width>=height]/best[ext=mp4]/best'
                 else:
                     # Square video
                     format_selector = 'best[ext=mp4]/best'
             else:
-                # Fallback to default format selector
-                format_selector = 'best[height>=width][ext=mp4]/best[ext=mp4]/best'
+                # Fallback to default format selector - more lenient
+                format_selector = 'best[height>=width]/best[ext=mp4]/best'
             
             # Create download options with the appropriate format selector
             download_opts = self.ydl_opts.copy()
@@ -135,19 +169,37 @@ class TikTokDownloader:
                     video_id = info.get('id') or self.extract_video_id(url) or 'tiktok_video'
                     video_ext = info.get('ext', 'mp4')
                     
-                    # Look for the downloaded file
-                    downloaded_file = os.path.join(DOWNLOAD_PATH, f"{video_id}.{video_ext}")
+                    # Try multiple possible file names
+                    possible_files = [
+                        os.path.join(DOWNLOAD_PATH, f"{video_id}.{video_ext}"),
+                        os.path.join(DOWNLOAD_PATH, f"{video_id}.mp4"),
+                        os.path.join(DOWNLOAD_PATH, f"{info.get('display_id', video_id)}.{video_ext}"),
+                        os.path.join(DOWNLOAD_PATH, f"{info.get('display_id', video_id)}.mp4"),
+                    ]
                     
-                    if not os.path.exists(downloaded_file):
-                        # Try to find any recently created file in download directory
-                        files = [f for f in os.listdir(DOWNLOAD_PATH) if os.path.isfile(os.path.join(DOWNLOAD_PATH, f))]
-                        if files:
-                            # Get the most recently created file
-                            files.sort(key=lambda x: os.path.getmtime(os.path.join(DOWNLOAD_PATH, x)), reverse=True)
-                            downloaded_file = os.path.join(DOWNLOAD_PATH, files[0])
+                    downloaded_file = None
+                    for file_path in possible_files:
+                        if os.path.exists(file_path):
+                            downloaded_file = file_path
+                            break
                     
-                    if not os.path.exists(downloaded_file):
-                        return False, ERROR_MESSAGES['download_failed'], []
+                    # If still not found, try to find any recently created file in download directory
+                    if not downloaded_file:
+                        try:
+                            files = [f for f in os.listdir(DOWNLOAD_PATH) if os.path.isfile(os.path.join(DOWNLOAD_PATH, f))]
+                            if files:
+                                # Get the most recently created file
+                                files.sort(key=lambda x: os.path.getmtime(os.path.join(DOWNLOAD_PATH, x)), reverse=True)
+                                # Check if it was created recently (within last 60 seconds)
+                                most_recent = os.path.join(DOWNLOAD_PATH, files[0])
+                                if time.time() - os.path.getmtime(most_recent) < 60:
+                                    downloaded_file = most_recent
+                        except Exception as e:
+                            logger.warning(f"Error finding downloaded file: {e}")
+                    
+                    if not downloaded_file or not os.path.exists(downloaded_file):
+                        logger.error(f"Downloaded file not found. Expected: {possible_files[0]}")
+                        return False, "❌ Downloaded file not found. The download may have failed.", []
                     
                     # Check actual file size
                     file_size = os.path.getsize(downloaded_file)
@@ -167,13 +219,28 @@ class TikTokDownloader:
                     return True, f"✅ Successfully downloaded TikTok video", media_files
                     
                 except yt_dlp.utils.DownloadError as e:
-                    logger.error(f"Download error: {e}")
-                    if "Private video" in str(e) or "This video is not available" in str(e):
+                    error_msg = str(e)
+                    logger.error(f"Download error: {error_msg}")
+                    
+                    # Provide more specific error messages
+                    if "Private video" in error_msg or "This video is not available" in error_msg:
                         return False, ERROR_MESSAGES['private_account'], []
-                    return False, ERROR_MESSAGES['download_failed'], []
+                    elif "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg.lower():
+                        return False, ERROR_MESSAGES['private_account'], []
+                    elif "Video unavailable" in error_msg or "unavailable" in error_msg.lower():
+                        return False, "❌ Video is unavailable. It may have been deleted or is not accessible.", []
+                    elif "HTTP Error 403" in error_msg or "403" in error_msg:
+                        return False, "❌ Access forbidden. TikTok may be blocking requests. Please try again later.", []
+                    elif "HTTP Error 429" in error_msg or "429" in error_msg or "rate limit" in error_msg.lower():
+                        return False, ERROR_MESSAGES['rate_limited'], []
+                    elif "HTTP Error" in error_msg:
+                        return False, f"❌ Connection error: {error_msg[:100]}", []
+                    else:
+                        return False, f"❌ Download failed: {error_msg[:150]}", []
                 except Exception as e:
-                    logger.error(f"Error downloading TikTok video: {e}")
-                    return False, ERROR_MESSAGES['download_failed'], []
+                    error_msg = str(e)
+                    logger.error(f"Error downloading TikTok video: {error_msg}", exc_info=True)
+                    return False, f"❌ Error: {error_msg[:150]}", []
                     
         except Exception as e:
             logger.error(f"Error processing TikTok URL: {e}")
