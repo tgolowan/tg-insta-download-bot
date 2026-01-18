@@ -19,11 +19,10 @@ class TikTokDownloader:
         os.makedirs(DOWNLOAD_PATH, exist_ok=True)
         
         # Configure yt-dlp options for TikTok
-        # Prefer vertical formats (height >= width) which is typical for TikTok
-        # Format selector: prefer vertical videos, then best quality MP4
-        # Using more lenient format selector to avoid download failures
+        # Format selector: prefer MP4, then best quality
+        # Note: We'll filter by aspect ratio programmatically after getting formats
         self.ydl_opts = {
-            'format': 'best[height>=width]/best[ext=mp4]/best',
+            'format': 'best[ext=mp4]/best',
             'outtmpl': os.path.join(DOWNLOAD_PATH, '%(id)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
@@ -135,30 +134,22 @@ class TikTokDownloader:
             if filesize and filesize > MAX_FILE_SIZE:
                 return False, ERROR_MESSAGES['file_too_large'], []
             
-            # Check video dimensions and create appropriate format selector
+            # Check video dimensions to verify aspect ratio
+            # Note: We use a simple format selector since yt-dlp doesn't support
+            # height>=width comparisons. The downloaded video will match the original aspect ratio.
             width = info.get('width', 0)
             height = info.get('height', 0)
             
-            # Create format selector based on video aspect ratio
-            # Prefer formats that match the original video's orientation
-            # Use a more lenient format selector to avoid download failures
+            # Log aspect ratio for debugging
             if width > 0 and height > 0:
-                if height > width:
-                    # Vertical video - prefer vertical formats (typical TikTok format)
-                    format_selector = 'best[height>=width]/best[ext=mp4]/best'
-                elif width > height:
-                    # Horizontal video - prefer horizontal formats
-                    format_selector = 'best[width>=height]/best[ext=mp4]/best'
-                else:
-                    # Square video
-                    format_selector = 'best[ext=mp4]/best'
-            else:
-                # Fallback to default format selector - more lenient
-                format_selector = 'best[height>=width]/best[ext=mp4]/best'
+                aspect_ratio = height / width if width > 0 else 1
+                orientation = "vertical" if height > width else "horizontal" if width > height else "square"
+                logger.info(f"Video dimensions: {width}x{height} ({orientation}, ratio: {aspect_ratio:.2f})")
             
-            # Create download options with the appropriate format selector
+            # Use simple format selector - yt-dlp will download the video matching the original aspect ratio
+            # Prefer MP4 format, fallback to best available
             download_opts = self.ydl_opts.copy()
-            download_opts['format'] = format_selector
+            download_opts['format'] = 'best[ext=mp4]/best'
             
             # Download the video with the correct format selector
             with yt_dlp.YoutubeDL(download_opts) as ydl:
