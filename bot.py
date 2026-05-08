@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from typing import Any, Dict, Optional
 
 from telegram import Update
 from telegram.error import Conflict, TelegramError
@@ -31,6 +32,13 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+def _forum_topic_api_kwargs(message_thread_id: Optional[int]) -> Optional[Dict[str, Any]]:
+    """PTB v20 has no message_thread_id on edit/delete; pass it via api_kwargs for forum topics."""
+    if message_thread_id is None:
+        return None
+    return {"message_thread_id": message_thread_id}
 
 
 class EditedPlainTextHandler(BaseHandler):
@@ -84,7 +92,7 @@ class SocialLinksBot:
                 chat_id=chat_id,
                 message_id=status_message_id,
                 text=text[:3900],
-                message_thread_id=message_thread_id,
+                api_kwargs=_forum_topic_api_kwargs(message_thread_id),
             )
         except TelegramError as exc:
             logger.warning("Could not edit status message: %s", exc)
@@ -245,7 +253,11 @@ class SocialLinksBot:
         finally:
             await asyncio.to_thread(self.downloader.cleanup_files, media_files)
             try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=status.message_id)
+                await context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=status.message_id,
+                    api_kwargs=_forum_topic_api_kwargs(thread_id),
+                )
             except Exception:
                 pass
 
