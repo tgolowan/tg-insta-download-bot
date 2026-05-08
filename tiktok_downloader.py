@@ -21,7 +21,9 @@ class TikTokDownloader:
         # Format selector: prefer MP4, then best quality
         # Note: We'll filter by aspect ratio programmatically after getting formats
         self.ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            # Favor mp4+h264-compatible streams when TikTok exposes them (Telegram is picky).
+            'format': 'bestvideo*[ext=mp4][vcodec*=h264]+bestaudio/bestvideo*+bestaudio/best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
             'outtmpl': os.path.join(DOWNLOAD_PATH, '%(id)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
@@ -148,7 +150,9 @@ class TikTokDownloader:
             # Use simple format selector - yt-dlp will download the video matching the original aspect ratio
             # Prefer MP4 format, fallback to best available
             download_opts = self.ydl_opts.copy()
-            download_opts['format'] = 'best[ext=mp4]/best'
+            download_opts['format'] = (
+                'bestvideo*[ext=mp4][vcodec*=h264]+bestaudio/bestvideo*+bestaudio/best[ext=mp4]/best'
+            )
             
             # Download the video with the correct format selector
             with yt_dlp.YoutubeDL(download_opts) as ydl:

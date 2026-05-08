@@ -6,6 +6,7 @@ import threading
 import time
 
 from telegram import Update
+from telegram.error import Conflict, TelegramError
 from telegram.ext import (
     Application,
     BaseHandler,
@@ -68,6 +69,25 @@ class SocialLinksBot:
         self.application.add_handler(EditedPlainTextHandler(handle_text))
 
         self.application.add_error_handler(self.error_handler)
+
+    async def _safe_edit_message(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        chat_id: int,
+        status_message_id: int,
+        message_thread_id,
+        text: str,
+    ) -> None:
+        """edit_message_text can fail when two pollers compete or Telegram rejects edits."""
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status_message_id,
+                text=text[:3900],
+                message_thread_id=message_thread_id,
+            )
+        except TelegramError as exc:
+            logger.warning("Could not edit status message: %s", exc)
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         host = html.escape(self.mirror_host)
@@ -148,41 +168,72 @@ class SocialLinksBot:
             )
         except Exception as e:
             logger.exception("TikTok download crashed: %s", e)
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status.message_id,
-                text="❌ TikTok download failed unexpectedly.",
-                message_thread_id=thread_id,
+            await self._safe_edit_message(
+                context,
+                chat_id,
+                status.message_id,
+                thread_id,
+                "❌ TikTok download failed unexpectedly.",
             )
             return
 
         if not ok:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=status.message_id,
-                text=str(detail)[:3900],
-                message_thread_id=thread_id,
+            await self._safe_edit_message(
+                context,
+                chat_id,
+                status.message_id,
+                thread_id,
+                str(detail),
             )
             return
 
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status.message_id,
-            text="✅ Sending video…",
-            message_thread_id=thread_id,
+        if not media_files:
+            await self._safe_edit_message(
+                context,
+                chat_id,
+                status.message_id,
+                thread_id,
+                "❌ Download finished but no file was produced.",
+            )
+            return
+
+        await self._safe_edit_message(
+            context,
+            chat_id,
+            status.message_id,
+            thread_id,
+            "✅ Sending video…",
         )
 
         try:
             for media in media_files:
-                cap = html.escape(media.get("title") or "TikTok")[:1020]
-                with open(media["file_path"], "rb") as vf:
-                    await context.bot.send_video(
+                path = media["file_path"]
+                raw_cap = media.get("title") or ""
+                cap = html.escape(raw_cap.strip())[:1020] if raw_cap.strip() else ""
+                vid_kw = dict(
+                    chat_id=chat_id,
+                    video=path,
+                    message_thread_id=thread_id,
+                )
+                if cap:
+                    vid_kw["caption"] = cap[:1024]
+                    vid_kw["parse_mode"] = "HTML"
+                try:
+                    await context.bot.send_video(**vid_kw)
+                except TelegramError as send_err:
+                    logger.warning(
+                        "send_video failed (%s); retrying as document", send_err
+                    )
+                    doc_kw = dict(
                         chat_id=chat_id,
-                        video=vf,
-                        caption=cap[:1024],
-                        parse_mode="HTML",
+                        document=path,
+                        filename=os.path.basename(path),
                         message_thread_id=thread_id,
                     )
+                    if cap:
+                        doc_kw["caption"] = cap[:1024]
+                        doc_kw["parse_mode"] = "HTML"
+                    await context.bot.send_document(**doc_kw)
                 await asyncio.sleep(0.4)
         except Exception as e:
             logger.exception("Sending TikTok video failed: %s", e)
@@ -199,9 +250,16 @@ class SocialLinksBot:
                 pass
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        err = context.error
+        if isinstance(err, Conflict):
+            logger.warning(
+                "Telegram Conflict: another client is polling with the same BOT_TOKEN. "
+                "Stop the duplicate (e.g. local python bot.py vs Railway)."
+            )
+            return
         logger.error(
             "Unhandled error while processing update",
-            exc_info=context.error,
+            exc_info=err,
         )
 
     def start_web_server(self) -> bool:
