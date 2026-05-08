@@ -33,14 +33,27 @@ def test_bot_import():
     import bot as bot_mod
 
     importlib.reload(bot_mod)
-    cls = getattr(bot_mod, "IgMirrorTelegramBot")
+    cls = getattr(bot_mod, "SocialLinksBot")
     cls()
     print("   OK")
 
 
+def test_tiktok_urls():
+    print("\nTesting TikTok URL extract…")
+    from tiktok_urls import extract_tiktok_urls
+
+    s = (
+        "See https://www.tiktok.com/@user/video/123?q=1 "
+        "and https://vm.tiktok.com/ZMabc/"
+    )
+    u = extract_tiktok_urls(s)
+    assert len(u) >= 2
+    print("   OK")
+
+
 def main() -> int:
-    print("Instagram mirror bot — smoke tests")
-    tests = [test_link_mirror, test_bot_import]
+    print("Social links bot — smoke tests")
+    tests = [test_link_mirror, test_tiktok_urls, test_bot_import]
     ok = True
     for t in tests:
         try:

@@ -2,7 +2,6 @@ import os
 import re
 import time
 import yt_dlp
-import requests
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 import logging

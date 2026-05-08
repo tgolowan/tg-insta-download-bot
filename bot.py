@@ -1,3 +1,4 @@
+import asyncio
 import html
 import logging
 import os
@@ -14,8 +15,15 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN, MIRROR_HOST, RESTART_ON_STOP
+from config import (
+    BOT_TOKEN,
+    ENABLE_TIKTOK_DOWNLOAD,
+    MIRROR_HOST,
+    RESTART_ON_STOP,
+)
 from link_mirror import replace_instagram_hosts
+from tiktok_downloader import TikTokDownloader
+from tiktok_urls import extract_tiktok_urls
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -35,9 +43,15 @@ class EditedPlainTextHandler(BaseHandler):
         return bool(msg and msg.text and not msg.text.startswith("/"))
 
 
-class IgMirrorTelegramBot:
+class SocialLinksBot:
+    """
+    Instagram: rewrite links to a mirror host for Telegram previews.
+    TikTok: download via yt-dlp and send the MP4 (optional).
+    """
+
     def __init__(self):
         self.mirror_host = MIRROR_HOST
+        self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
         self.application = Application.builder().token(BOT_TOKEN).build()
         self._register_handlers()
 
@@ -57,41 +71,132 @@ class IgMirrorTelegramBot:
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         host = html.escape(self.mirror_host)
+        tt = (
+            " I can also download <b>TikTok</b> videos and send the file here."
+            if ENABLE_TIKTOK_DOWNLOAD
+            else ""
+        )
         await update.message.reply_text(
             "Send an Instagram post, reel, or TV link - I'll reply with the same "
-            f"URL on <b>www.{host}</b> so Telegram can show a preview.\n\n"
-            "Works in groups and DMs. Use /help for details.",
+            f"URL on <b>www.{host}</b> so Telegram can show a preview.{tt}\n\n"
+            "Works in groups and DMs. Use /help.",
             parse_mode="HTML",
         )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         host = html.escape(self.mirror_host)
-        await update.message.reply_text(
-            "Paste any <code>instagram.com</code> link (optionally with other text). "
-            "I'll echo your message with the host swapped for the mirror so link "
-            "previews load.\n\n"
-            f"Mirror host: <code>www.{host}</code> (set <code>MIRROR_HOST</code> to change).\n"
-            "If previews are missing, the mirror may be down or omit Open Graph tags.",
-            parse_mode="HTML",
-        )
+        lines = [
+            "<b>Instagram</b>",
+            "Paste any <code>instagram.com</code> link. I'll rewrite the host to ",
+            f"<code>www.{host}</code> (set <code>MIRROR_HOST</code>) for link previews.",
+        ]
+        if ENABLE_TIKTOK_DOWNLOAD:
+            lines += [
+                "",
+                "<b>TikTok</b>",
+                "Paste a <code>tiktok.com</code> or <code>vm.tiktok.com</code> link. "
+                "I'll download it with yt-dlp and send the video (max ~50&nbsp;MB). "
+                "Set <code>ENABLE_TIKTOK_DOWNLOAD=false</code> to turn this off.",
+            ]
+        lines += ["", "<i>Only one polling instance per bot token (local vs Railway).</i>"]
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
-    async def _handle_incoming(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_incoming(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         message = update.message or update.edited_message
         if not message or not message.text:
             return
 
-        new_text, changed = replace_instagram_hosts(message.text, self.mirror_host)
-        if not changed:
-            return
+        text = message.text
 
+        mirror_text, ig_changed = replace_instagram_hosts(text, self.mirror_host)
+        if ig_changed:
+            thread_id = getattr(message, "message_thread_id", None)
+            await message.reply_text(
+                mirror_text,
+                disable_web_page_preview=False,
+                reply_to_message_id=message.message_id,
+                message_thread_id=thread_id,
+            )
+
+        if self.downloader:
+            for link in extract_tiktok_urls(text):
+                if self.downloader.is_valid_tiktok_url(link):
+                    await self._process_tiktok(context, message, link)
+
+    async def _process_tiktok(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        message,
+        link: str,
+    ) -> None:
+        chat_id = message.chat_id
         thread_id = getattr(message, "message_thread_id", None)
-        kw = dict(
-            text=new_text,
-            disable_web_page_preview=False,
+
+        status = await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏳ Downloading TikTok…\n<code>{html.escape(link)}</code>",
+            parse_mode="HTML",
             reply_to_message_id=message.message_id,
             message_thread_id=thread_id,
         )
-        await message.reply_text(**kw)
+
+        try:
+            ok, detail, media_files = await asyncio.to_thread(
+                self.downloader.download_video, link
+            )
+        except Exception as e:
+            logger.exception("TikTok download crashed: %s", e)
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status.message_id,
+                text="❌ TikTok download failed unexpectedly.",
+                message_thread_id=thread_id,
+            )
+            return
+
+        if not ok:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=status.message_id,
+                text=str(detail)[:3900],
+                message_thread_id=thread_id,
+            )
+            return
+
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=status.message_id,
+            text="✅ Sending video…",
+            message_thread_id=thread_id,
+        )
+
+        try:
+            for media in media_files:
+                cap = html.escape(media.get("title") or "TikTok")[:1020]
+                with open(media["file_path"], "rb") as vf:
+                    await context.bot.send_video(
+                        chat_id=chat_id,
+                        video=vf,
+                        caption=cap[:1024],
+                        parse_mode="HTML",
+                        message_thread_id=thread_id,
+                    )
+                await asyncio.sleep(0.4)
+        except Exception as e:
+            logger.exception("Sending TikTok video failed: %s", e)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Could not upload the video: {e}",
+                message_thread_id=thread_id,
+            )
+        finally:
+            await asyncio.to_thread(self.downloader.cleanup_files, media_files)
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=status.message_id)
+            except Exception:
+                pass
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(
@@ -111,8 +216,9 @@ class IgMirrorTelegramBot:
                 return jsonify(
                     {
                         "status": "healthy",
-                        "service": "ig-link-mirror",
+                        "service": "social-links-bot",
                         "mirror": self.mirror_host,
+                        "tiktok": bool(self.downloader),
                         "timestamp": time.time(),
                     }
                 )
@@ -120,7 +226,12 @@ class IgMirrorTelegramBot:
             @app.route("/")
             def root():
                 return jsonify(
-                    {"status": "running", "health": "/health", "mirror": self.mirror_host}
+                    {
+                        "status": "running",
+                        "health": "/health",
+                        "mirror": self.mirror_host,
+                        "tiktok": bool(self.downloader),
+                    }
                 )
 
             def run_flask() -> None:
@@ -138,7 +249,11 @@ class IgMirrorTelegramBot:
             return False
 
     def run(self) -> None:
-        logger.info("Starting Instagram → %s mirror bot", self.mirror_host)
+        logger.info(
+            "Starting bot (IG mirror → %s, TikTok download=%s)",
+            self.mirror_host,
+            bool(self.downloader),
+        )
         threading.Thread(target=self.start_web_server, daemon=True).start()
 
         while True:
@@ -155,7 +270,7 @@ class IgMirrorTelegramBot:
 
 
 def main() -> None:
-    IgMirrorTelegramBot().run()
+    SocialLinksBot().run()
 
 
 if __name__ == "__main__":
