@@ -1,159 +1,57 @@
 #!/usr/bin/env python3
-"""
-Test script for TikTok Download Bot
-Run this to test individual components before starting the full bot
-"""
+"""Smoke tests for the Instagram mirror bot."""
 
 import os
 import sys
-from dotenv import load_dotenv
 
-def test_imports():
-    """Test if all required modules can be imported."""
-    print("🔍 Testing imports...")
-    
-    try:
-        from telegram import Update
-        from telegram.ext import Application
-        print("✅ python-telegram-bot imported successfully")
-    except ImportError as e:
-        print(f"❌ Failed to import python-telegram-bot: {e}")
-        return False
-    
-    try:
-        import yt_dlp
-        print("✅ yt-dlp imported successfully")
-    except ImportError as e:
-        print(f"❌ Failed to import yt-dlp: {e}")
-        return False
-    
-    try:
-        import requests
-        print("✅ requests imported successfully")
-    except ImportError as e:
-        print(f"❌ Failed to import requests: {e}")
-        return False
-    
-    return True
 
-def test_config():
-    """Test configuration loading."""
-    print("\n🔍 Testing configuration...")
-    
-    try:
-        # Temporarily set a test token for testing
-        import os
-        os.environ['BOT_TOKEN'] = 'test_token_for_testing'
-        
-        from config import BOT_TOKEN, DOWNLOAD_PATH, MAX_FILE_SIZE
-        print("✅ Configuration loaded successfully")
-        print(f"   Download path: {DOWNLOAD_PATH}")
-        print(f"   Max file size: {MAX_FILE_SIZE / 1024 / 1024:.1f}MB")
-        return True
-    except Exception as e:
-        print(f"❌ Failed to load configuration: {e}")
-        return False
+def test_link_mirror():
+    print("\nTesting link_mirror…")
+    from link_mirror import replace_instagram_hosts, instagram_url_to_mirror
 
-def test_tiktok_downloader():
-    """Test TikTok downloader initialization."""
-    print("\n🔍 Testing TikTok downloader...")
-    
-    try:
-        # Ensure BOT_TOKEN is set for testing
-        import os
-        if 'BOT_TOKEN' not in os.environ:
-            os.environ['BOT_TOKEN'] = 'test_token_for_testing'
-        
-        from tiktok_downloader import TikTokDownloader
-        downloader = TikTokDownloader()
-        print("✅ TikTok downloader initialized successfully")
-        
-        # Test URL validation
-        test_urls = [
-            "https://www.tiktok.com/@username/video/1234567890",
-            "https://vm.tiktok.com/ABC123/",
-            "https://example.com/not-tiktok",
-            "invalid-url"
-        ]
-        
-        for url in test_urls:
-            is_valid = downloader.is_valid_tiktok_url(url)
-            status = "✅" if is_valid else "❌"
-            print(f"   {status} {url}")
-        
-        return True
-    except Exception as e:
-        print(f"❌ Failed to initialize TikTok downloader: {e}")
-        return False
+    mirror = instagram_url_to_mirror(
+        "https://www.instagram.com/reel/AbCdE/", "kkclip.com"
+    )
+    assert mirror == "https://www.kkclip.com/reel/AbCdE/", mirror
 
-def test_bot_initialization():
-    """Test bot initialization (without starting)."""
-    print("\n🔍 Testing bot initialization...")
-    
-    try:
-        # Ensure BOT_TOKEN is set for testing
-        import os
-        if 'BOT_TOKEN' not in os.environ:
-            os.environ['BOT_TOKEN'] = 'test_token_for_testing'
-        
-        from bot import TikTokDownloadBot
-        # Don't actually start the bot, just test initialization
-        print("✅ Bot class imported successfully")
-        return True
-    except Exception as e:
-        print(f"❌ Failed to import bot: {e}")
-        return False
+    text = "Watch https://instagram.com/tv/foo/!"
+    out, changed = replace_instagram_hosts(text, "kkclip.com")
+    assert changed
+    assert "instagram.com" not in out
+    assert out.endswith("/tv/foo/!")
+    print("   OK")
 
-def test_environment():
-    """Test environment setup."""
-    print("\n🔍 Testing environment...")
-    
-    # Load environment variables
-    load_dotenv()
-    
-    bot_token = os.getenv('BOT_TOKEN')
-    if bot_token and bot_token != 'your_telegram_bot_token_here':
-        print("✅ BOT_TOKEN found in environment")
-    else:
-        print("⚠️  BOT_TOKEN not set or using default value")
-        print("   Please set BOT_TOKEN in your .env file")
-    
-    return True
 
-def main():
-    """Run all tests."""
-    print("🚀 TikTok Download Bot - Component Tests\n")
-    
-    tests = [
-        test_imports,
-        test_config,
-        test_tiktok_downloader,
-        test_bot_initialization,
-        test_environment
-    ]
-    
-    passed = 0
-    total = len(tests)
-    
-    for test in tests:
+def test_bot_import():
+    print("\nTesting bot import…")
+    os.environ["BOT_TOKEN"] = "dummy"
+    import importlib
+
+    import config
+
+    importlib.reload(config)
+    import bot as bot_mod
+
+    importlib.reload(bot_mod)
+    cls = getattr(bot_mod, "IgMirrorTelegramBot")
+    cls()
+    print("   OK")
+
+
+def main() -> int:
+    print("Instagram mirror bot — smoke tests")
+    tests = [test_link_mirror, test_bot_import]
+    ok = True
+    for t in tests:
         try:
-            if test():
-                passed += 1
+            t()
         except Exception as e:
-            print(f"❌ Test {test.__name__} failed with exception: {e}")
-    
-    print(f"\n📊 Test Results: {passed}/{total} tests passed")
-    
-    if passed == total:
-        print("🎉 All tests passed! The bot should work correctly.")
-        print("\nNext steps:")
-        print("1. Set your BOT_TOKEN in the .env file")
-        print("2. Run: python bot.py")
-    else:
-        print("⚠️  Some tests failed. Please fix the issues before running the bot.")
-        return 1
-    
-    return 0
+            print(f"   FAIL {t.__name__}: {e}")
+            ok = False
+
+    print(f"\nResult: {'all passed' if ok else 'some failed'}")
+    return 0 if ok else 1
+
 
 if __name__ == "__main__":
     sys.exit(main())

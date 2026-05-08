@@ -1,419 +1,162 @@
-import asyncio
+import html
 import logging
-import re
 import os
-import time
-from typing import List, Dict
 import threading
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, BaseHandler, filters, ContextTypes
-from telegram.constants import ParseMode
-from tiktok_downloader import TikTokDownloader
-from config import BOT_TOKEN, ERROR_MESSAGES
+import time
 
-# Set up logging
+from telegram import Update
+from telegram.ext import (
+    Application,
+    BaseHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+from config import BOT_TOKEN, MIRROR_HOST, RESTART_ON_STOP
+from link_mirror import replace_instagram_hosts
+
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-class TikTokDownloadBot:
+
+class EditedPlainTextHandler(BaseHandler):
+    """Plain-text messages that were edited (not slash commands)."""
+
+    def __init__(self, callback):
+        super().__init__(callback)
+
+    def check_update(self, update: Update) -> bool:
+        msg = update.edited_message
+        return bool(msg and msg.text and not msg.text.startswith("/"))
+
+
+class IgMirrorTelegramBot:
     def __init__(self):
-        """Initialize the bot with TikTok downloader."""
-        self.downloader = TikTokDownloader()
+        self.mirror_host = MIRROR_HOST
         self.application = Application.builder().token(BOT_TOKEN).build()
-        self.setup_handlers()
-        self.web_app = None
-        self.web_runner = None
-    
-    def setup_handlers(self):
-        """Set up bot command and message handlers."""
-        # Command handlers
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("help", self.help_command))
-        self.application.add_handler(CommandHandler("status", self.status_command))
-        
-        # Message handler for TikTok links in regular messages
-        self.application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            self.handle_message
-        ))
-        
-        # Handler for edited messages - create a simple custom handler
-        class EditedMessageHandler(BaseHandler):
-            def __init__(self, callback):
-                super().__init__(callback)
-            
-            def check_update(self, update: Update) -> bool:
-                """Check if update contains an edited message with text."""
-                if not update.edited_message:
-                    return False
-                if not update.edited_message.text:
-                    return False
-                if update.edited_message.text.startswith('/'):
-                    return False
-                return True
-        
-        self.application.add_handler(EditedMessageHandler(self.handle_message))
-        
-        # Error handler
+        self._register_handlers()
+
+    def _register_handlers(self) -> None:
+        self.application.add_handler(CommandHandler("start", self.cmd_start))
+        self.application.add_handler(CommandHandler("help", self.cmd_help))
+
+        async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            await self._handle_incoming(update, context)
+
+        self.application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
+        )
+        self.application.add_handler(EditedPlainTextHandler(handle_text))
+
         self.application.add_error_handler(self.error_handler)
-    
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command."""
-        welcome_message = """
-🤖 **TikTok Download Bot**
 
-I can download videos from TikTok!
-
-**How to use:**
-1. Simply paste a TikTok link in the chat
-2. I'll automatically detect it and download the video
-3. The video will be sent back to you
-
-**Supported content:**
-• TikTok videos
-• TikTok reels
-• All public TikTok content
-
-**Commands:**
-/help - Show this help message
-/status - Check bot status
-
-**Note:** I work in both private chats and groups!
-        """
-        
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        host = html.escape(self.mirror_host)
         await update.message.reply_text(
-            welcome_message,
-            parse_mode=ParseMode.MARKDOWN
+            "Send an Instagram post, reel, or TV link - I'll reply with the same "
+            f"URL on <b>www.{host}</b> so Telegram can show a preview.\n\n"
+            "Works in groups and DMs. Use /help for details.",
+            parse_mode="HTML",
         )
-    
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help command."""
-        help_text = """
-📖 **Help & Instructions**
 
-**Basic Usage:**
-• Paste any TikTok video link
-• I'll automatically download and send the video back
-
-**What I can download:**
-✅ Public TikTok videos
-✅ TikTok reels
-✅ All public TikTok content
-
-**Limitations:**
-❌ Private videos (not accessible)
-❌ Files larger than 50MB
-❌ Age-restricted content
-
-**Troubleshooting:**
-• Make sure the link is from a public video
-• Try again later if download fails
-• Contact admin if issues persist
-
-**Example links:**
-• https://www.tiktok.com/@username/video/1234567890
-• https://vm.tiktok.com/ABC123/
-• https://tiktok.com/@username/video/1234567890
-        """
-        
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        host = html.escape(self.mirror_host)
         await update.message.reply_text(
-            help_text,
-            parse_mode=ParseMode.MARKDOWN
+            "Paste any <code>instagram.com</code> link (optionally with other text). "
+            "I'll echo your message with the host swapped for the mirror so link "
+            "previews load.\n\n"
+            f"Mirror host: <code>www.{host}</code> (set <code>MIRROR_HOST</code> to change).\n"
+            "If previews are missing, the mirror may be down or omit Open Graph tags.",
+            parse_mode="HTML",
         )
-    
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /status command."""
-        status_text = """
-📊 **Bot Status**
 
-**Status:** ✅ Online
-**Platform:** TikTok
-**Download Path:** `./downloads`
-**Max File Size:** 50MB
-
-**Recent Activity:** All systems operational
-        """
-        
-        await update.message.reply_text(
-            status_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    def extract_tiktok_links(self, text: str) -> List[str]:
-        """Extract TikTok links from text message."""
-        # Regex pattern for TikTok URLs
-        patterns = [
-            r'https?://(?:www\.|vm\.|vt\.|m\.)?tiktok\.com/[^\s]+',
-            r'https?://tiktok\.com/@[^\s]+',
-            r'https?://vm\.tiktok\.com/[a-zA-Z0-9]+',
-            r'https?://vt\.tiktok\.com/[a-zA-Z0-9]+',
-        ]
-        
-        links = []
-        for pattern in patterns:
-            found = re.findall(pattern, text)
-            links.extend(found)
-        
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_links = []
-        for link in links:
-            if link not in seen:
-                seen.add(link)
-                unique_links.append(link)
-        
-        return unique_links
-    
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle incoming messages and detect TikTok links."""
-        # Handle both regular messages and edited messages
+    async def _handle_incoming(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.message or update.edited_message
-        
-        if not message:
+        if not message or not message.text:
             return
-        
-        # Get text from message
-        text = getattr(message, 'text', None)
-        
-        if not text:
+
+        new_text, changed = replace_instagram_hosts(message.text, self.mirror_host)
+        if not changed:
             return
-        
-        # Extract TikTok links
-        tiktok_links = self.extract_tiktok_links(text)
-        
-        if not tiktok_links:
-            return
-        
-        # Process each TikTok link
-        for link in tiktok_links:
-            await self.process_tiktok_link(update, context, link, message)
-    
-    async def process_tiktok_link(self, update: Update, context: ContextTypes.DEFAULT_TYPE, link: str, message=None):
-        """Process a single TikTok link and download media."""
-        chat_id = update.effective_chat.id
-        
-        # Use provided message or get from update
-        if message is None:
-            message = update.message or update.edited_message
-        
-        if not message:
-            logger.warning("No message found in update")
-            return
-        
-        # Get message thread ID if message is in a topic/thread (for forum groups)
-        message_thread_id = None
-        if message:
-            # In python-telegram-bot, message_thread_id is available if message is in a topic
-            message_thread_id = getattr(message, 'message_thread_id', None)
-        
-        # Send processing message in the same topic/thread
-        processing_msg = await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"🔄 Processing TikTok link...\n{link}",
-            message_thread_id=message_thread_id
+
+        thread_id = getattr(message, "message_thread_id", None)
+        kw = dict(
+            text=new_text,
+            disable_web_page_preview=False,
+            reply_to_message_id=message.message_id,
+            message_thread_id=thread_id,
         )
-        
-        try:
-            # Download the video
-            success, message_text, media_files = self.downloader.download_video(link)
-            
-            if not success:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=processing_msg.message_id,
-                    text=f"❌ {message_text}"
-                )
-                return
-            
-            # Send success message
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.message_id,
-                text=f"✅ {message_text}"
-            )
-            
-            # Send media files in the same topic/thread
-            await self.send_media_files(context, chat_id, media_files, message_thread_id)
-            
-            # Clean up downloaded files
-            self.downloader.cleanup_files(media_files)
-            
-        except Exception as e:
-            logger.error(f"Error processing TikTok link: {e}")
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=processing_msg.message_id,
-                text="❌ An error occurred while processing the link. Please try again."
-            )
-    
-    async def send_media_files(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_files: List[Dict], message_thread_id: int = None):
-        """Send downloaded media files to the chat in the same topic/thread."""
-        for media in media_files:
-            try:
-                if media['type'] == 'video':
-                    title = media.get('title', 'TikTok Video')
-                    duration = media.get('duration', 0)
-                    duration_text = f"Duration: {duration}s" if duration > 0 else ""
-                    
-                    await context.bot.send_video(
-                        chat_id=chat_id,
-                        video=open(media['file_path'], 'rb'),
-                        caption=f"🎥 {title}\nSize: {media['file_size'] / 1024 / 1024:.1f}MB\n{duration_text}".strip(),
-                        message_thread_id=message_thread_id
-                    )
-                
-                # Small delay to avoid flooding
-                await asyncio.sleep(0.5)
-                
-            except Exception as e:
-                logger.error(f"Error sending media file: {e}")
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"❌ Failed to send media file: {media.get('file_path', 'unknown')}",
-                    message_thread_id=message_thread_id
-                )
-    
-    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle errors in the bot."""
-        logger.error(f"Update {update} caused error {context.error}")
-        
-        if update and update.effective_chat:
-            # Get message thread ID if available
-            message_thread_id = None
-            message = update.message or update.edited_message
-            if message:
-                message_thread_id = getattr(message, 'message_thread_id', None)
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="❌ An error occurred. Please try again later.",
-                    message_thread_id=message_thread_id
-                )
-            except Exception as e:
-                logger.error(f"Failed to send error message: {e}")
-    
-    def start_web_server(self):
-        """Start web server for health checks using Flask (synchronous)."""
+        await message.reply_text(**kw)
+
+    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error(
+            "Unhandled error while processing update",
+            exc_info=context.error,
+        )
+
+    def start_web_server(self) -> bool:
+        """Health endpoint for Railway and similar hosts."""
         try:
             from flask import Flask, jsonify
-            import threading
-            
+
             app = Flask(__name__)
-            
-            @app.route('/health')
+
+            @app.route("/health")
             def health_check():
-                return jsonify({
-                    'status': 'healthy',
-                    'bot': 'running',
-                    'timestamp': time.time()
-                })
-            
-            @app.route('/')
+                return jsonify(
+                    {
+                        "status": "healthy",
+                        "service": "ig-link-mirror",
+                        "mirror": self.mirror_host,
+                        "timestamp": time.time(),
+                    }
+                )
+
+            @app.route("/")
             def root():
-                return jsonify({
-                    'status': 'TikTok Download Bot is running',
-                    'health': '/health'
-                })
-            
-            def run_flask():
-                port = int(os.environ.get('PORT', 8000))
-                app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-            
-            # Start Flask in a separate thread
-            flask_thread = threading.Thread(target=run_flask, daemon=True)
-            flask_thread.start()
-            
-            logger.info(f"Web server started on port {os.environ.get('PORT', 8000)}")
+                return jsonify(
+                    {"status": "running", "health": "/health", "mirror": self.mirror_host}
+                )
+
+            def run_flask() -> None:
+                port = int(os.environ.get("PORT", "8000"))
+                app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+            threading.Thread(target=run_flask, daemon=True).start()
+            logger.info("Health server on port %s", os.environ.get("PORT", "8000"))
             return True
-            
         except ImportError:
-            logger.warning("Flask not available, using simple HTTP server")
-            return self._start_simple_server()
-        except Exception as e:
-            logger.error(f"Failed to start web server: {e}")
+            logger.warning("Flask not installed; skipping /health server")
             return False
-    
-    def _start_simple_server(self):
-        """Fallback to simple HTTP server if Flask fails."""
-        try:
-            import http.server
-            import socketserver
-            
-            class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
-                def do_GET(self):
-                    if self.path == '/health':
-                        self.send_response(200)
-                        self.send_header('Content-type', 'application/json')
-                        self.end_headers()
-                        response = {
-                            'status': 'healthy',
-                            'bot': 'running',
-                            'timestamp': time.time()
-                        }
-                        self.wfile.write(str(response).encode())
-                    else:
-                        self.send_response(200)
-                        self.send_header('Content-type', 'text/plain')
-                        self.end_headers()
-                        self.wfile.write(b'TikTok Download Bot is running\nHealth: /health')
-                
-                def log_message(self, format, *args):
-                    # Suppress logging for health checks
-                    pass
-            
-            def run_simple_server():
-                port = int(os.environ.get('PORT', 8000))
-                with socketserver.TCPServer(("0.0.0.0", port), HealthCheckHandler) as httpd:
-                    httpd.serve_forever()
-            
-            # Start simple server in a separate thread
-            server_thread = threading.Thread(target=run_simple_server, daemon=True)
-            server_thread.start()
-            
-            logger.info(f"Simple HTTP server started on port {os.environ.get('PORT', 8000)}")
-            return True
-            
         except Exception as e:
-            logger.error(f"Failed to start simple server: {e}")
+            logger.error("Failed to start health server: %s", e)
             return False
-    
-    def run(self):
-        """Start the bot with web server and supervise unexpected stops."""
-        logger.info("Starting TikTok Download Bot...")
 
-        # Start web server in a separate thread
-        web_thread = threading.Thread(target=self.start_web_server, daemon=True)
-        web_thread.start()
-
-        restart_on_stop = os.getenv('RESTART_ON_STOP', 'true').lower() in ['1', 'true', 'yes']
+    def run(self) -> None:
+        logger.info("Starting Instagram → %s mirror bot", self.mirror_host)
+        threading.Thread(target=self.start_web_server, daemon=True).start()
 
         while True:
             try:
-                # This blocks until a stop signal is received or an unrecoverable error occurs
                 self.application.run_polling(allowed_updates=Update.ALL_TYPES)
             except Exception as e:
-                logger.error(f"Bot crashed with exception: {e}")
+                logger.error("Polling stopped: %s", e)
 
-            if restart_on_stop:
-                logger.warning("Application stopped. Restarting in 5 seconds...")
+            if RESTART_ON_STOP:
+                logger.warning("Restarting in 5 seconds...")
                 time.sleep(5)
-                continue
             else:
-                logger.info("Application stopped. Exiting.")
                 break
 
-def main():
-    """Main function to run the bot."""
-    try:
-        bot = TikTokDownloadBot()
-        bot.run()
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
-        raise
+
+def main() -> None:
+    IgMirrorTelegramBot().run()
+
 
 if __name__ == "__main__":
     main()

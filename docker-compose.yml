@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    env_file:
+      - .env
+    environment:
+      MIRROR_HOST: ${MIRROR_HOST:-kkclip.com}
+      PORT: "8000"
+    restart: unless-stopped
