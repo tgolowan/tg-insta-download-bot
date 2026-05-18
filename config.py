@@ -1,8 +1,33 @@
 import os
+from typing import FrozenSet, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _parse_allowed_chat_ids(raw: Optional[str]) -> Optional[FrozenSet[int]]:
+    """
+    None -> no whitelist (every chat allowed).
+    frozenset -> only these chats get link/TikTok handling.
+    Groups/supergroups use negative ids (e.g. -1001234567890).
+    """
+    if raw is None:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    out: set[int] = set()
+    for part in s.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            continue
+    return frozenset(out)
+
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -31,3 +56,6 @@ ERROR_MESSAGES = {
     "forbidden": "❌ Access forbidden.",
     "tiktok_unavailable": "❌ TikTok temporarily unavailable.",
 }
+
+# Comma-separated chat_id list. Unset or empty = allow all chats.
+ALLOWED_CHAT_IDS = _parse_allowed_chat_ids(os.getenv("ALLOWED_CHAT_IDS"))

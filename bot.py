@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 
 from config import (
+    ALLOWED_CHAT_IDS,
     BOT_TOKEN,
     ENABLE_TIKTOK_DOWNLOAD,
     MIRROR_HOST,
@@ -60,11 +61,13 @@ class SocialLinksBot:
 
     def __init__(self):
         self.mirror_host = MIRROR_HOST
+        self._allowed_chat_ids = ALLOWED_CHAT_IDS
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
         self.application = Application.builder().token(BOT_TOKEN).build()
         self._register_handlers()
 
     def _register_handlers(self) -> None:
+        self.application.add_handler(CommandHandler("chatid", self.cmd_chatid))
         self.application.add_handler(CommandHandler("start", self.cmd_start))
         self.application.add_handler(CommandHandler("help", self.cmd_help))
 
@@ -77,6 +80,32 @@ class SocialLinksBot:
         self.application.add_handler(EditedPlainTextHandler(handle_text))
 
         self.application.add_error_handler(self.error_handler)
+
+    def _chat_is_allowed(self, chat_id: int) -> bool:
+        if self._allowed_chat_ids is None:
+            return True
+        return chat_id in self._allowed_chat_ids
+
+    async def cmd_chatid(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Always works — use this to read a group's id before adding it to ALLOWED_CHAT_IDS."""
+        chat = update.effective_chat
+        user = update.effective_user
+        if not chat or not update.message:
+            return
+        parts = [
+            f"<b>chat id</b>: <code>{chat.id}</code>",
+            f"<b>type</b>: <code>{html.escape(str(chat.type))}</code>",
+        ]
+        if getattr(chat, "title", None):
+            parts.append(f"<b>title</b>: {html.escape(chat.title)}")
+        if user:
+            parts.append(f"<b>your user id</b>: <code>{user.id}</code>")
+        parts += [
+            "",
+            "Add this <b>chat id</b> to the <code>ALLOWED_CHAT_IDS</code> env variable "
+            "(comma-separated). Redeploy / restart the bot after changing it.",
+        ]
+        await update.message.reply_text("\n".join(parts), parse_mode="HTML")
 
     async def _safe_edit_message(
         self,
@@ -98,6 +127,8 @@ class SocialLinksBot:
             logger.warning("Could not edit status message: %s", exc)
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self._chat_is_allowed(update.effective_chat.id):
+            return
         host = html.escape(self.mirror_host)
         tt = (
             " I can also download <b>TikTok</b> videos and send the file here."
@@ -112,6 +143,8 @@ class SocialLinksBot:
         )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self._chat_is_allowed(update.effective_chat.id):
+            return
         host = html.escape(self.mirror_host)
         lines = [
             "<b>Instagram</b>",
@@ -127,6 +160,12 @@ class SocialLinksBot:
                 "Set <code>ENABLE_TIKTOK_DOWNLOAD=false</code> to turn this off.",
             ]
         lines += ["", "<i>Only one polling instance per bot token (local vs Railway).</i>"]
+        if self._allowed_chat_ids is not None:
+            lines += [
+                "",
+                "<b>Access</b>: This deployment uses an allowlist "
+                "(<code>ALLOWED_CHAT_IDS</code>). Use <code>/chatid</code> in a group to get its id.",
+            ]
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
     async def _handle_incoming(
@@ -134,6 +173,9 @@ class SocialLinksBot:
     ) -> None:
         message = update.message or update.edited_message
         if not message or not message.text:
+            return
+
+        if not self._chat_is_allowed(message.chat_id):
             return
 
         text = message.text
