@@ -23,6 +23,7 @@ from config import (
     ALLOW_PRIVATE_CHAT,
     BOT_TOKEN,
     ENABLE_TIKTOK_DOWNLOAD,
+    LOG_LINK_ACTIVITY,
     MIRROR_HOST,
     RESTART_ON_STOP,
 )
@@ -188,6 +189,12 @@ class SocialLinksBot:
 
         mirror_text, ig_changed = replace_instagram_hosts(text, self.mirror_host)
         if ig_changed:
+            if LOG_LINK_ACTIVITY:
+                logger.info(
+                    "Handled Instagram mirror chat_id=%s thread=%s",
+                    message.chat_id,
+                    getattr(message, "message_thread_id", None),
+                )
             thread_id = getattr(message, "message_thread_id", None)
             await message.reply_text(
                 mirror_text,
@@ -199,6 +206,12 @@ class SocialLinksBot:
         if self.downloader:
             for link in extract_tiktok_urls(text):
                 if self.downloader.is_valid_tiktok_url(link):
+                    if LOG_LINK_ACTIVITY:
+                        logger.info(
+                            "TikTok download start chat_id=%s host=%s…",
+                            message.chat_id,
+                            link[:48],
+                        )
                     await self._process_tiktok(context, message, link)
 
     async def _process_tiktok(

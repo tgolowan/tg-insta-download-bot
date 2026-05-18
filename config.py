@@ -67,3 +67,10 @@ ALLOW_PRIVATE_CHAT = os.getenv("ALLOW_PRIVATE_CHAT", "true").lower() in (
     "true",
     "yes",
 )
+
+# When true, INFO-log each Instagram mirror / TikTok job (visible in Railway runtime logs).
+LOG_LINK_ACTIVITY = os.getenv("LOG_LINK_ACTIVITY", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
