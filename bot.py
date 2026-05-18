@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, Optional
 
 from telegram import Update
+from telegram.constants import ChatType
 from telegram.error import Conflict, TelegramError
 from telegram.ext import (
     Application,
@@ -19,6 +20,7 @@ from telegram.ext import (
 
 from config import (
     ALLOWED_CHAT_IDS,
+    ALLOW_PRIVATE_CHAT,
     BOT_TOKEN,
     ENABLE_TIKTOK_DOWNLOAD,
     MIRROR_HOST,
@@ -81,10 +83,12 @@ class SocialLinksBot:
 
         self.application.add_error_handler(self.error_handler)
 
-    def _chat_is_allowed(self, chat_id: int) -> bool:
+    def _chat_is_allowed(self, chat) -> bool:
         if self._allowed_chat_ids is None:
             return True
-        return chat_id in self._allowed_chat_ids
+        if ALLOW_PRIVATE_CHAT and chat.type == ChatType.PRIVATE:
+            return True
+        return chat.id in self._allowed_chat_ids
 
     async def cmd_chatid(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Always works — use this to read a group's id before adding it to ALLOWED_CHAT_IDS."""
@@ -127,7 +131,7 @@ class SocialLinksBot:
             logger.warning("Could not edit status message: %s", exc)
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._chat_is_allowed(update.effective_chat.id):
+        if not self._chat_is_allowed(update.effective_chat):
             return
         host = html.escape(self.mirror_host)
         tt = (
@@ -143,7 +147,7 @@ class SocialLinksBot:
         )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._chat_is_allowed(update.effective_chat.id):
+        if not self._chat_is_allowed(update.effective_chat):
             return
         host = html.escape(self.mirror_host)
         lines = [
@@ -163,8 +167,10 @@ class SocialLinksBot:
         if self._allowed_chat_ids is not None:
             lines += [
                 "",
-                "<b>Access</b>: This deployment uses an allowlist "
-                "(<code>ALLOWED_CHAT_IDS</code>). Use <code>/chatid</code> in a group to get its id.",
+                "<b>Access</b>: Groups are limited to <code>ALLOWED_CHAT_IDS</code>. "
+                "Private chat with this bot is still allowed (set "
+                "<code>ALLOW_PRIVATE_CHAT=false</code> to disable). "
+                "Use <code>/chatid</code> to read an id.",
             ]
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -175,7 +181,7 @@ class SocialLinksBot:
         if not message or not message.text:
             return
 
-        if not self._chat_is_allowed(message.chat_id):
+        if not self._chat_is_allowed(message.chat):
             return
 
         text = message.text

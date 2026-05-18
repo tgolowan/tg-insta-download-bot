@@ -59,3 +59,11 @@ ERROR_MESSAGES = {
 
 # Comma-separated chat_id list. Unset or empty = allow all chats.
 ALLOWED_CHAT_IDS = _parse_allowed_chat_ids(os.getenv("ALLOWED_CHAT_IDS"))
+
+# When ALLOWED_CHAT_IDS is set: allow one-to-one DMs without listing your user id (default).
+# Set to false so only chats whose id appears in ALLOWED_CHAT_IDS work (add your user id for DM).
+ALLOW_PRIVATE_CHAT = os.getenv("ALLOW_PRIVATE_CHAT", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
