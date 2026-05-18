@@ -25,9 +25,10 @@ from config import (
     ENABLE_TIKTOK_DOWNLOAD,
     LOG_LINK_ACTIVITY,
     MIRROR_HOST,
+    MIRROR_THREADS,
     RESTART_ON_STOP,
 )
-from link_mirror import replace_instagram_hosts
+from link_mirror import replace_mirrored_social_links
 from tiktok_downloader import TikTokDownloader
 from tiktok_urls import extract_tiktok_urls
 
@@ -64,6 +65,7 @@ class SocialLinksBot:
 
     def __init__(self):
         self.mirror_host = MIRROR_HOST
+        self._mirror_threads = MIRROR_THREADS
         self._allowed_chat_ids = ALLOWED_CHAT_IDS
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
         self.application = Application.builder().token(BOT_TOKEN).build()
@@ -141,8 +143,9 @@ class SocialLinksBot:
             else ""
         )
         await update.message.reply_text(
-            "Send an Instagram post, reel, or TV link - I'll reply with the same "
-            f"URL on <b>www.{host}</b> so Telegram can show a preview.{tt}\n\n"
+            "Send an Instagram or Meta Threads link - I'll reply with the same URL on "
+            f"<b>www.{host}</b> when previews work on that mirror.{tt}\n\n"
+            "Forum topics supported: replies stay inside the topic. "
             "Works in groups and DMs. Use /help.",
             parse_mode="HTML",
         )
@@ -156,6 +159,11 @@ class SocialLinksBot:
             "Paste any <code>instagram.com</code> link. I'll rewrite the host to ",
             f"<code>www.{host}</code> (set <code>MIRROR_HOST</code>) for link previews.",
         ]
+        if self._mirror_threads:
+            lines.append(
+                "Also <code>threads.net</code> / <code>threads.com</code> "
+                "(set <code>MIRROR_THREADS=false</code> to disable)."
+            )
         if ENABLE_TIKTOK_DOWNLOAD:
             lines += [
                 "",
@@ -187,20 +195,19 @@ class SocialLinksBot:
 
         text = message.text
 
-        mirror_text, ig_changed = replace_instagram_hosts(text, self.mirror_host)
-        if ig_changed:
+        mirror_text, mirrored = replace_mirrored_social_links(
+            text, self.mirror_host, mirror_threads=self._mirror_threads
+        )
+        if mirrored:
             if LOG_LINK_ACTIVITY:
                 logger.info(
-                    "Handled Instagram mirror chat_id=%s thread=%s",
+                    "Handled social mirror chat_id=%s topic=%s",
                     message.chat_id,
                     getattr(message, "message_thread_id", None),
                 )
-            thread_id = getattr(message, "message_thread_id", None)
             await message.reply_text(
                 mirror_text,
                 disable_web_page_preview=False,
-                reply_to_message_id=message.message_id,
-                message_thread_id=thread_id,
             )
 
         if self.downloader:
@@ -223,12 +230,9 @@ class SocialLinksBot:
         chat_id = message.chat_id
         thread_id = getattr(message, "message_thread_id", None)
 
-        status = await context.bot.send_message(
-            chat_id=chat_id,
+        status = await message.reply_text(
             text=f"⏳ Downloading TikTok…\n<code>{html.escape(link)}</code>",
             parse_mode="HTML",
-            reply_to_message_id=message.message_id,
-            message_thread_id=thread_id,
         )
 
         try:

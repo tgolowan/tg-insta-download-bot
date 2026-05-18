@@ -74,3 +74,10 @@ LOG_LINK_ACTIVITY = os.getenv("LOG_LINK_ACTIVITY", "false").lower() in (
     "true",
     "yes",
 )
+
+# Rewrite threads.net / threads.com with the same mirror host as Instagram (if your mirror supports it).
+MIRROR_THREADS = os.getenv("MIRROR_THREADS", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)

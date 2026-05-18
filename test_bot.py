@@ -7,7 +7,12 @@ import sys
 
 def test_link_mirror():
     print("\nTesting link_mirror…")
-    from link_mirror import replace_instagram_hosts, instagram_url_to_mirror
+    from link_mirror import (
+        instagram_url_to_mirror,
+        replace_instagram_hosts,
+        replace_mirrored_social_links,
+        replace_threads_hosts,
+    )
 
     mirror = instagram_url_to_mirror(
         "https://www.instagram.com/reel/AbCdE/", "kkclip.com"
@@ -19,6 +24,12 @@ def test_link_mirror():
     assert changed
     assert "instagram.com" not in out
     assert out.endswith("/tv/foo/!")
+    out2, c2 = replace_threads_hosts("u https://www.threads.net/@a/post/1!", "kkclip.com")
+    assert c2 and "threads.net" not in out2 and "kkclip.com" in out2
+    out3, c3 = replace_mirrored_social_links(
+        "https://threads.net/x", "kkclip.com", mirror_threads=False
+    )
+    assert not c3
     print("   OK")
 
 
