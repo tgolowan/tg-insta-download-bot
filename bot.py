@@ -25,11 +25,9 @@ from config import (
     ENABLE_TIKTOK_DOWNLOAD,
     LOG_LINK_ACTIVITY,
     MIRROR_HOST,
-    MIRROR_THREADS,
     RESTART_ON_STOP,
-    THREADS_PREVIEW_MODE,
 )
-from link_mirror import replace_mirrored_social_links
+from link_mirror import replace_instagram_hosts
 from tiktok_downloader import TikTokDownloader
 from tiktok_urls import extract_tiktok_urls
 
@@ -66,8 +64,6 @@ class SocialLinksBot:
 
     def __init__(self):
         self.mirror_host = MIRROR_HOST
-        self._mirror_threads = MIRROR_THREADS
-        self._threads_preview_mode = THREADS_PREVIEW_MODE
         self._allowed_chat_ids = ALLOWED_CHAT_IDS
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
         self.application = Application.builder().token(BOT_TOKEN).build()
@@ -145,9 +141,9 @@ class SocialLinksBot:
             else ""
         )
         await update.message.reply_text(
-            "Send an Instagram or Meta Threads link - I'll reply with the same URL on "
-            f"<b>www.{host}</b> when previews work on that mirror.{tt}\n\n"
-            "Forum topics supported: replies stay inside the topic. "
+            "Send an Instagram post, reel, or TV link - I'll reply with the same URL on "
+            f"<b>www.{host}</b> so Telegram can show a preview.{tt}\n\n"
+            "Forum topics: replies stay in the topic. "
             "Works in groups and DMs. Use /help.",
             parse_mode="HTML",
         )
@@ -161,13 +157,6 @@ class SocialLinksBot:
             "Paste any <code>instagram.com</code> link. I'll rewrite the host to ",
             f"<code>www.{host}</code> (set <code>MIRROR_HOST</code>) for link previews.",
         ]
-        if self._mirror_threads:
-            lines.append(
-                "Threads: <code>threads.net</code> → preview via "
-                f"<code>{html.escape(self._threads_preview_mode)}</code> "
-                "(<code>THREADS_PREVIEW_MODE</code>; try <code>vxthreads</code> or "
-                "<code>fixthreads_seria</code>). Set <code>MIRROR_THREADS=false</code> to disable."
-            )
         if ENABLE_TIKTOK_DOWNLOAD:
             lines += [
                 "",
@@ -199,16 +188,11 @@ class SocialLinksBot:
 
         text = message.text
 
-        mirror_text, mirrored = replace_mirrored_social_links(
-            text,
-            self.mirror_host,
-            mirror_threads=self._mirror_threads,
-            threads_preview_mode=self._threads_preview_mode,
-        )
+        mirror_text, mirrored = replace_instagram_hosts(text, self.mirror_host)
         if mirrored:
             if LOG_LINK_ACTIVITY:
                 logger.info(
-                    "Handled social mirror chat_id=%s topic=%s",
+                    "Handled Instagram mirror chat_id=%s topic=%s",
                     message.chat_id,
                     getattr(message, "message_thread_id", None),
                 )
