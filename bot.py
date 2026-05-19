@@ -27,6 +27,7 @@ from config import (
     MIRROR_HOST,
     MIRROR_THREADS,
     RESTART_ON_STOP,
+    THREADS_PREVIEW_MODE,
 )
 from link_mirror import replace_mirrored_social_links
 from tiktok_downloader import TikTokDownloader
@@ -66,6 +67,7 @@ class SocialLinksBot:
     def __init__(self):
         self.mirror_host = MIRROR_HOST
         self._mirror_threads = MIRROR_THREADS
+        self._threads_preview_mode = THREADS_PREVIEW_MODE
         self._allowed_chat_ids = ALLOWED_CHAT_IDS
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
         self.application = Application.builder().token(BOT_TOKEN).build()
@@ -161,8 +163,10 @@ class SocialLinksBot:
         ]
         if self._mirror_threads:
             lines.append(
-                "Also <code>threads.net</code> / <code>threads.com</code> "
-                "(set <code>MIRROR_THREADS=false</code> to disable)."
+                "Threads: <code>threads.net</code> → preview via "
+                f"<code>{html.escape(self._threads_preview_mode)}</code> "
+                "(<code>THREADS_PREVIEW_MODE</code>; try <code>vxthreads</code> or "
+                "<code>fixthreads_seria</code>). Set <code>MIRROR_THREADS=false</code> to disable."
             )
         if ENABLE_TIKTOK_DOWNLOAD:
             lines += [
@@ -196,7 +200,10 @@ class SocialLinksBot:
         text = message.text
 
         mirror_text, mirrored = replace_mirrored_social_links(
-            text, self.mirror_host, mirror_threads=self._mirror_threads
+            text,
+            self.mirror_host,
+            mirror_threads=self._mirror_threads,
+            threads_preview_mode=self._threads_preview_mode,
         )
         if mirrored:
             if LOG_LINK_ACTIVITY:

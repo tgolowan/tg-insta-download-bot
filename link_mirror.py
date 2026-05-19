@@ -1,11 +1,15 @@
 """
-Detect Instagram / Meta Threads URLs and rewrite the host for a mirror preview.
+Detect Instagram URLs and Threads URLs; rewrite for Telegram-friendly link previews.
+
+Threads: raw Meta URLs often produce weak previews. vxthreads-style rewrites expose
+Open Graph Telegram can unfurl better (see THREADS_PREVIEW_MODE).
+
 """
 
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 _TRAILING = frozenset(".,);:!?\"]'\u00bb")
@@ -40,7 +44,8 @@ def instagram_url_to_mirror(url: str, mirror_host: str) -> str:
     )
 
 
-def threads_url_to_mirror(url: str, mirror_host: str) -> str:
+def threads_url_to_instagram_mirror(url: str, mirror_host: str) -> str:
+    """Reuse MIRROR_HOST (e.g. kkclip) — only if that host understands Threads paths."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         parsed = urlparse("https://" + url)
@@ -52,6 +57,55 @@ def threads_url_to_mirror(url: str, mirror_host: str) -> str:
     return urlunparse(
         ("https", new_netloc, parsed.path or "/", parsed.params, parsed.query, parsed.fragment)
     )
+
+
+def threads_url_to_vx_embed(url: str) -> str:
+    """threads.net → vxthreads.net (common pattern for Telegram/Discord embeds)."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        parsed = urlparse("https://" + url)
+    nl = parsed.netloc.lower()
+    new_nl: Optional[str] = None
+    if nl.endswith("threads.net"):
+        new_nl = nl[: -len("threads.net")] + "vxthreads.net"
+    elif nl.endswith("threads.com"):
+        new_nl = nl[: -len("threads.com")] + "vxthreads.com"
+    if new_nl is None:
+        return url
+    return urlunparse(
+        ("https", new_nl, parsed.path or "/", parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def threads_url_to_fixthreads_seria(url: str) -> str:
+    """Community fixer host; preserves path/query."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        parsed = urlparse("https://" + url)
+    nl = parsed.netloc.lower().removeprefix("www.")
+    if not (nl.endswith("threads.net") or nl.endswith("threads.com")):
+        return url
+    return urlunparse(
+        (
+            "https",
+            "fixthreads.seria.moe",
+            parsed.path or "/",
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def rewrite_threads_url(url: str, mode: str, mirror_host: str) -> str:
+    m = (mode or "vxthreads").strip().lower()
+    if m == "vxthreads":
+        return threads_url_to_vx_embed(url)
+    if m == "fixthreads_seria":
+        return threads_url_to_fixthreads_seria(url)
+    if m == "instagram_mirror":
+        return threads_url_to_instagram_mirror(url, mirror_host)
+    return threads_url_to_vx_embed(url)
 
 
 def _strip_trailing_noise(s: str) -> Tuple[str, str]:
@@ -89,7 +143,11 @@ def replace_instagram_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
     return _INSTAGRAM_RE.sub(repl, text), changed
 
 
-def replace_threads_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
+def replace_threads_hosts(
+    text: str,
+    threads_preview_mode: str,
+    mirror_host: str,
+) -> Tuple[str, bool]:
     changed = False
 
     def repl(match: re.Match[str]) -> str:
@@ -100,17 +158,20 @@ def replace_threads_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
         if not u or not (nl.endswith("threads.net") or nl.endswith("threads.com")):
             return raw_full
         changed = True
-        return threads_url_to_mirror(u, mirror_host) + trailing
+        return rewrite_threads_url(u, threads_preview_mode, mirror_host) + trailing
 
     return _THREADS_RE.sub(repl, text), changed
 
 
 def replace_mirrored_social_links(
-    text: str, mirror_host: str, *, mirror_threads: bool = True
+    text: str,
+    mirror_host: str,
+    *,
+    mirror_threads: bool = True,
+    threads_preview_mode: str = "vxthreads",
 ) -> Tuple[str, bool]:
-    """Instagram + optionally Meta Threads URLs -> same mirror host (path/query kept)."""
     text, ig = replace_instagram_hosts(text, mirror_host)
     if not mirror_threads:
         return text, ig
-    text, th = replace_threads_hosts(text, mirror_host)
+    text, th = replace_threads_hosts(text, threads_preview_mode, mirror_host)
     return text, ig or th

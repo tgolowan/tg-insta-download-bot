@@ -75,9 +75,18 @@ LOG_LINK_ACTIVITY = os.getenv("LOG_LINK_ACTIVITY", "false").lower() in (
     "yes",
 )
 
-# Rewrite threads.net / threads.com with the same mirror host as Instagram (if your mirror supports it).
+# When false, Threads URLs are not rewritten at all.
 MIRROR_THREADS = os.getenv("MIRROR_THREADS", "true").lower() in (
     "1",
     "true",
     "yes",
+)
+
+# vxthreads → threads.net hosts become vxthreads.net (best Telegram previews in practice).
+THREADS_PREVIEW_MODE_RAW = os.getenv("THREADS_PREVIEW_MODE", "vxthreads").strip().lower()
+THREADS_PREVIEW_MODE = (
+    THREADS_PREVIEW_MODE_RAW
+    if THREADS_PREVIEW_MODE_RAW
+    in ("vxthreads", "instagram_mirror", "fixthreads_seria")
+    else "vxthreads"
 )

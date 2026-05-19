@@ -24,8 +24,18 @@ def test_link_mirror():
     assert changed
     assert "instagram.com" not in out
     assert out.endswith("/tv/foo/!")
-    out2, c2 = replace_threads_hosts("u https://www.threads.net/@a/post/1!", "kkclip.com")
-    assert c2 and "threads.net" not in out2 and "kkclip.com" in out2
+    out_vx, cv = replace_threads_hosts(
+        "see https://www.threads.net/@a/post/1!", "vxthreads", "ignored.com"
+    )
+    assert cv and "vxthreads.net" in out_vx and "www.threads" not in out_vx
+    out_ig_mirror, ck = replace_threads_hosts(
+        "see https://threads.net/x/y", "instagram_mirror", "kkclip.com"
+    )
+    assert ck and "kkclip.com" in out_ig_mirror
+    out_fix, cf = replace_threads_hosts(
+        "https://threads.net/z", "fixthreads_seria", "x.com"
+    )
+    assert cf and "fixthreads.seria.moe" in out_fix
     out3, c3 = replace_mirrored_social_links(
         "https://threads.net/x", "kkclip.com", mirror_threads=False
     )
