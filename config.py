@@ -1,9 +1,12 @@
+import logging
 import os
 from typing import FrozenSet, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_allowed_chat_ids(raw: Optional[str]) -> Optional[FrozenSet[int]]:
@@ -26,6 +29,12 @@ def _parse_allowed_chat_ids(raw: Optional[str]) -> Optional[FrozenSet[int]]:
             out.add(int(part))
         except ValueError:
             continue
+    if not out:
+        logger.warning(
+            "ALLOWED_CHAT_IDS is non-empty but no valid integers were parsed; ignoring "
+            "allowlist so the bot stays usable — fix Railway / .env (typos)."
+        )
+        return None
     return frozenset(out)
 
 

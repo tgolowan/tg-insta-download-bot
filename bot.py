@@ -46,14 +46,17 @@ def _forum_topic_api_kwargs(message_thread_id: Optional[int]) -> Optional[Dict[s
 
 
 class EditedPlainTextHandler(BaseHandler):
-    """Plain-text messages that were edited (not slash commands)."""
+    """Edited captions or plain text (but not slash-command lines)."""
 
     def __init__(self, callback):
         super().__init__(callback)
 
     def check_update(self, update: Update) -> bool:
         msg = update.edited_message
-        return bool(msg and msg.text and not msg.text.startswith("/"))
+        if not msg:
+            return False
+        body = (msg.text or msg.caption or "").strip()
+        return bool(body) and not body.startswith("/")
 
 
 class SocialLinksBot:
@@ -77,9 +80,8 @@ class SocialLinksBot:
         async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await self._handle_incoming(update, context)
 
-        self.application.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
-        )
+        msg_filter = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND
+        self.application.add_handler(MessageHandler(msg_filter, handle_text))
         self.application.add_handler(EditedPlainTextHandler(handle_text))
 
         self.application.add_error_handler(self.error_handler)
@@ -154,7 +156,8 @@ class SocialLinksBot:
         host = html.escape(self.mirror_host)
         lines = [
             "<b>Instagram</b>",
-            "Paste any <code>instagram.com</code> link. I'll rewrite the host to ",
+            "Paste a link in message text <i>or</i> in a photo/video <b>caption</b>. ",
+            "I'll rewrite the host to ",
             f"<code>www.{host}</code> (set <code>MIRROR_HOST</code>) for link previews.",
         ]
         if ENABLE_TIKTOK_DOWNLOAD:
@@ -180,15 +183,16 @@ class SocialLinksBot:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         message = update.message or update.edited_message
-        if not message or not message.text:
+        if not message:
+            return
+        body = (message.text or message.caption or "").strip()
+        if not body:
             return
 
         if not self._chat_is_allowed(message.chat):
             return
 
-        text = message.text
-
-        mirror_text, mirrored = replace_instagram_hosts(text, self.mirror_host)
+        mirror_text, mirrored = replace_instagram_hosts(body, self.mirror_host)
         if mirrored:
             if LOG_LINK_ACTIVITY:
                 logger.info(
@@ -202,7 +206,7 @@ class SocialLinksBot:
             )
 
         if self.downloader:
-            for link in extract_tiktok_urls(text):
+            for link in extract_tiktok_urls(body):
                 if self.downloader.is_valid_tiktok_url(link):
                     if LOG_LINK_ACTIVITY:
                         logger.info(
