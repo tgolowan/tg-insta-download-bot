@@ -17,12 +17,16 @@ class TikTokDownloader:
         # Create download directory
         os.makedirs(DOWNLOAD_PATH, exist_ok=True)
         
-        # Configure yt-dlp options for TikTok
-        # Format selector: prefer MP4, then best quality
-        # Note: We'll filter by aspect ratio programmatically after getting formats
+        # TikTok ladders: forcing h264+mp4 often yields ~30 FPS AVC while TikTok publishes
+        # smoother video on bytevc/hevc (~60 FPS). Prefer high FPS, then broader fallbacks.
         self.ydl_opts = {
-            # Favor mp4+h264-compatible streams when TikTok exposes them (Telegram is picky).
-            'format': 'bestvideo*[ext=mp4][vcodec*=h264]+bestaudio/bestvideo*+bestaudio/best[ext=mp4]/best',
+            'format': (
+                'bestvideo*[fps>=50]+bestaudio/'
+                'bestvideo*+bestaudio/'
+                'bestvideo+bestaudio/'
+                'best'
+            ),
+            'format_sort': ['fps', 'res'],
             'merge_output_format': 'mp4',
             'outtmpl': os.path.join(DOWNLOAD_PATH, '%(id)s.%(ext)s'),
             'quiet': False,
@@ -141,21 +145,18 @@ class TikTokDownloader:
             width = info.get('width', 0)
             height = info.get('height', 0)
             
-            # Log aspect ratio for debugging
-            if width > 0 and height > 0:
-                aspect_ratio = height / width if width > 0 else 1
-                orientation = "vertical" if height > width else "horizontal" if width > height else "square"
-                logger.info(f"Video dimensions: {width}x{height} ({orientation}, ratio: {aspect_ratio:.2f})")
-            
-            # Use simple format selector - yt-dlp will download the video matching the original aspect ratio
-            # Prefer MP4 format, fallback to best available
-            download_opts = self.ydl_opts.copy()
-            download_opts['format'] = (
-                'bestvideo*[ext=mp4][vcodec*=h264]+bestaudio/bestvideo*+bestaudio/best[ext=mp4]/best'
+            logger.info(
+                "TikTok merged probe fps=%s vcodec=%s acodec=%s %sx%s",
+                info.get("fps"),
+                info.get("vcodec"),
+                info.get("acodec"),
+                info.get("width"),
+                info.get("height"),
             )
-            
-            # Download the video with the correct format selector
-            with yt_dlp.YoutubeDL(download_opts) as ydl:
+
+            # Download (same yt-dlp options as probe — no narrower h264 override).
+            # Telegram may refuse some codecs as video messages; bot falls back to document.
+            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
                 try:
                     ydl.download([url])
                     
