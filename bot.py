@@ -282,7 +282,15 @@ class SocialLinksBot:
                     chat_id=chat_id,
                     video=path,
                     message_thread_id=thread_id,
+                    supports_streaming=True,
                 )
+                w, h = media.get("width"), media.get("height")
+                if w and h:
+                    vid_kw["width"] = int(w)
+                    vid_kw["height"] = int(h)
+                dur = media.get("duration")
+                if dur:
+                    vid_kw["duration"] = int(dur)
                 if cap:
                     vid_kw["caption"] = cap[:1024]
                     vid_kw["parse_mode"] = "HTML"

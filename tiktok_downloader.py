@@ -1,15 +1,132 @@
+import json
+import logging
 import os
 import re
+import subprocess
 import time
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
 import yt_dlp
-from typing import List, Dict, Optional, Tuple
-from urllib.parse import urlparse, parse_qs
-import logging
+
 from config import DOWNLOAD_PATH, MAX_FILE_SIZE, ERROR_MESSAGES
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def probe_video_file(path: str) -> Dict[str, Any]:
+    """
+    Read width/height/duration from the file (ffprobe).
+    Applies rotation so Telegram gets display dimensions (fixes mobile stretch).
+    """
+    meta: Dict[str, Any] = {"width": None, "height": None, "duration": None}
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,duration,rotation,display_aspect_ratio,sample_aspect_ratio",
+                "-of",
+                "json",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            return meta
+        data = json.loads(proc.stdout or "{}")
+        streams = data.get("streams") or []
+        if not streams:
+            return meta
+        st = streams[0]
+        w, h = st.get("width"), st.get("height")
+        rot = st.get("rotation")
+        if rot is not None:
+            try:
+                rot = int(rot)
+            except (TypeError, ValueError):
+                rot = 0
+        else:
+            rot = 0
+        if w and h and rot in (90, 270, -90, -270):
+            w, h = h, w
+        meta["width"] = int(w) if w else None
+        meta["height"] = int(h) if h else None
+        dur = st.get("duration")
+        if dur is not None:
+            try:
+                meta["duration"] = max(1, int(float(dur)))
+            except (TypeError, ValueError):
+                pass
+    except Exception as exc:
+        logger.warning("ffprobe failed for %s: %s", path, exc)
+    return meta
+
+
+def normalize_for_telegram(src: str) -> str:
+    """
+    Remux to h264/aac with square pixels — mobile Telegram mis-renders some TikTok HEVC files.
+    Returns path to use (original if normalize skipped or failed).
+    """
+    base, _ = os.path.splitext(src)
+    dst = f"{base}_tg.mp4"
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                src,
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-vf",
+                "setsar=1",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                "-movflags",
+                "+faststart",
+                dst,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if proc.returncode != 0 or not os.path.isfile(dst):
+            logger.warning("ffmpeg normalize failed: %s", (proc.stderr or "")[-400:])
+            return src
+        if os.path.getsize(dst) > MAX_FILE_SIZE:
+            os.remove(dst)
+            return src
+        os.remove(src)
+        return dst
+    except Exception as exc:
+        logger.warning("ffmpeg normalize error: %s", exc)
+        if os.path.isfile(dst):
+            try:
+                os.remove(dst)
+            except OSError:
+                pass
+        return src
+
 
 class TikTokDownloader:
     def __init__(self):
@@ -201,15 +318,30 @@ class TikTokDownloader:
                     if file_size > MAX_FILE_SIZE:
                         os.remove(downloaded_file)
                         return False, ERROR_MESSAGES['file_too_large'], []
-                    
+
+                    downloaded_file = normalize_for_telegram(downloaded_file)
+                    file_size = os.path.getsize(downloaded_file)
+                    if file_size > MAX_FILE_SIZE:
+                        os.remove(downloaded_file)
+                        return False, ERROR_MESSAGES['file_too_large'], []
+
+                    vmeta = probe_video_file(downloaded_file)
                     media_files = [{
                         'type': 'video',
                         'file_path': downloaded_file,
                         'file_size': file_size,
                         'mime_type': 'video/mp4',
                         'title': info.get('title', 'TikTok Video'),
-                        'duration': info.get('duration', 0)
+                        'duration': vmeta.get('duration') or info.get('duration', 0),
+                        'width': vmeta.get('width') or info.get('width'),
+                        'height': vmeta.get('height') or info.get('height'),
                     }]
+                    logger.info(
+                        "TikTok send meta width=%s height=%s duration=%s",
+                        media_files[0].get("width"),
+                        media_files[0].get("height"),
+                        media_files[0].get("duration"),
+                    )
                     
                     return True, f"✅ Successfully downloaded TikTok video", media_files
                     
