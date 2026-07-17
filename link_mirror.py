@@ -73,6 +73,7 @@ def replace_instagram_hosts_checked(
     mirror_hosts: Sequence[str],
     *,
     verify_preview: bool = True,
+    preview_timeout: float = 8.0,
 ) -> Tuple[str, bool]:
     """
     Rewrite instagram.com URLs using mirror_hosts in order.
@@ -99,7 +100,7 @@ def replace_instagram_hosts_checked(
 
         from preview_check import pick_working_mirror
 
-        picked = pick_working_mirror(u, mirror_hosts)
+        picked = pick_working_mirror(u, mirror_hosts, timeout=preview_timeout)
         if not picked:
             return raw_full
         mirrored, _host = picked

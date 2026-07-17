@@ -27,6 +27,7 @@ from config import (
     LOG_LINK_ACTIVITY,
     MIRROR_FALLBACK_HOSTS,
     MIRROR_HOST,
+    PREVIEW_PROBE_TIMEOUT,
     RESTART_ON_STOP,
 )
 from link_mirror import extract_instagram_urls, replace_instagram_hosts_checked
@@ -72,6 +73,7 @@ class SocialLinksBot:
         self.mirror_host = MIRROR_HOST
         self._mirror_hosts = mirror_host_chain(MIRROR_HOST, MIRROR_FALLBACK_HOSTS)
         self._check_preview = CHECK_LINK_PREVIEW
+        self._preview_timeout = PREVIEW_PROBE_TIMEOUT
         self._allowed_chat_ids = ALLOWED_CHAT_IDS
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
         self.application = Application.builder().token(BOT_TOKEN).build()
@@ -206,6 +208,7 @@ class SocialLinksBot:
             body,
             self._mirror_hosts,
             verify_preview=self._check_preview,
+            preview_timeout=self._preview_timeout,
         )
         if mirrored:
             if LOG_LINK_ACTIVITY:

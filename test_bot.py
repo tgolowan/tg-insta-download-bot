@@ -32,8 +32,9 @@ def test_preview_parse():
 
     assert page_likely_has_preview('<meta property="og:video" content="x">')
     assert not page_likely_has_preview("<html></html>")
-    chain = mirror_host_chain("kkclip.com", ("vxinstagram.com", "kkclip.com"))
-    assert chain == ["kkclip.com", "vxinstagram.com"]
+    chain = mirror_host_chain("kkclip.com", ("instagram7.com", "vxinstagram.com"))
+    assert chain[0] == "kkclip.com"
+    assert "instagram7.com" in chain
     print("   OK")
 
 

@@ -46,7 +46,12 @@ if not BOT_TOKEN:
 MIRROR_HOST = os.getenv("MIRROR_HOST", "kkclip.com")
 
 def _parse_mirror_fallbacks(raw: Optional[str]) -> tuple:
-    default = ("vxinstagram.com", "zzinstagram.com")
+    default = (
+        "instagram7.com",
+        "vxinstagram.com",
+        "eeinstagram.com",
+        "zzinstagram.com",
+    )
     if raw is None:
         return default
     s = raw.strip()
@@ -57,6 +62,8 @@ def _parse_mirror_fallbacks(raw: Optional[str]) -> tuple:
 
 
 MIRROR_FALLBACK_HOSTS = _parse_mirror_fallbacks(os.getenv("MIRROR_FALLBACK_HOSTS"))
+
+PREVIEW_PROBE_TIMEOUT = float(os.getenv("PREVIEW_PROBE_TIMEOUT", "8"))
 
 CHECK_LINK_PREVIEW = os.getenv("CHECK_LINK_PREVIEW", "true").lower() in (
     "1",
