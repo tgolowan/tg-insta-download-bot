@@ -10,15 +10,19 @@ def test_link_mirror():
     from link_mirror import instagram_url_to_mirror, replace_instagram_hosts
 
     mirror = instagram_url_to_mirror(
-        "https://www.instagram.com/reel/AbCdE/", "kkclip.com"
+        "https://www.instagram.com/reel/AbCdE/", "vxinstagram.com"
     )
-    assert mirror == "https://www.kkclip.com/reel/AbCdE/", mirror
+    assert mirror == "https://www.vxinstagram.com/reel/AbCdE/", mirror
 
     text = "Watch https://instagram.com/tv/foo/!"
-    out, changed = replace_instagram_hosts(text, "kkclip.com")
+    out, changed = replace_instagram_hosts(text, "vxinstagram.com")
     assert changed
-    assert "instagram.com" not in out
+    assert "://www.instagram.com" not in out and "://instagram.com" not in out
     assert out.endswith("/tv/foo/!")
+    tracked = "https://www.instagram.com/reel/DS0Q8cfDLDA/?igsh=abc=="
+    mirrored = instagram_url_to_mirror(tracked, "vxinstagram.com")
+    assert mirrored == "https://www.vxinstagram.com/reel/DS0Q8cfDLDA/"
+    assert "igsh" not in mirrored
     print("   OK")
 
 

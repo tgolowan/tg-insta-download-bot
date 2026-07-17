@@ -28,9 +28,9 @@ def instagram_url_to_mirror(url: str, mirror_host: str) -> str:
         return url
     base = normalize_mirror_host(mirror_host)
     new_netloc = f"www.{base}"
-    return urlunparse(
-        ("https", new_netloc, parsed.path or "/", parsed.params, parsed.query, parsed.fragment)
-    )
+    path = parsed.path or "/"
+    # Mirrors only need /reel/ID/ or /p/ID/ — drop igsh/utm tracking (Telegram preview).
+    return urlunparse(("https", new_netloc, path, "", "", ""))
 
 
 def _strip_trailing_noise(s: str) -> Tuple[str, str]:

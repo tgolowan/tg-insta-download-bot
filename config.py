@@ -42,8 +42,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
 
-# Host only, e.g. kkclip.com -> URLs become https://www.kkclip.com/...
-MIRROR_HOST = os.getenv("MIRROR_HOST", "kkclip.com")
+# Host only — Instagram URLs become https://www.<MIRROR_HOST>/reel/…/
+# vxinstagram.com serves Open Graph for Telegram; kkclip.com often 404s.
+MIRROR_HOST = os.getenv("MIRROR_HOST", "vxinstagram.com")
 
 RESTART_ON_STOP = os.getenv("RESTART_ON_STOP", "true").lower() in ("1", "true", "yes")
 
