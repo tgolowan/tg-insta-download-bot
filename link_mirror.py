@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import List, Optional, Sequence, Tuple
 from urllib.parse import urlparse, urlunparse
 
 _TRAILING = frozenset(".,);:!?\"]'\u00bb")
@@ -66,3 +66,45 @@ def replace_instagram_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
         return instagram_url_to_mirror(u, mirror_host) + trailing
 
     return _INSTAGRAM_RE.sub(repl, text), changed
+
+
+def replace_instagram_hosts_checked(
+    text: str,
+    mirror_hosts: Sequence[str],
+    *,
+    verify_preview: bool = True,
+) -> Tuple[str, bool]:
+    """
+    Rewrite instagram.com URLs using mirror_hosts in order.
+    When verify_preview is True, probe each candidate URL before using it.
+    URLs with no working mirror are left unchanged.
+    """
+    if not mirror_hosts:
+        return text, False
+
+    changed = False
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal changed
+        raw_full = match.group(0)
+        u, trailing = _strip_trailing_noise(raw_full)
+        nl = urlparse(u).netloc.lower().removeprefix("www.")
+        if not u or not nl.endswith("instagram.com"):
+            return raw_full
+
+        if not verify_preview:
+            out = instagram_url_to_mirror(u, mirror_hosts[0]) + trailing
+            changed = True
+            return out
+
+        from preview_check import pick_working_mirror
+
+        picked = pick_working_mirror(u, mirror_hosts)
+        if not picked:
+            return raw_full
+        mirrored, _host = picked
+        changed = True
+        return mirrored + trailing
+
+    out = _INSTAGRAM_RE.sub(repl, text)
+    return out, changed

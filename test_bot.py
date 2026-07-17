@@ -10,19 +10,30 @@ def test_link_mirror():
     from link_mirror import instagram_url_to_mirror, replace_instagram_hosts
 
     mirror = instagram_url_to_mirror(
-        "https://www.instagram.com/reel/AbCdE/", "vxinstagram.com"
+        "https://www.instagram.com/reel/AbCdE/", "kkclip.com"
     )
-    assert mirror == "https://www.vxinstagram.com/reel/AbCdE/", mirror
+    assert mirror == "https://www.kkclip.com/reel/AbCdE/", mirror
 
     text = "Watch https://instagram.com/tv/foo/!"
-    out, changed = replace_instagram_hosts(text, "vxinstagram.com")
+    out, changed = replace_instagram_hosts(text, "kkclip.com")
     assert changed
     assert "://www.instagram.com" not in out and "://instagram.com" not in out
     assert out.endswith("/tv/foo/!")
     tracked = "https://www.instagram.com/reel/DS0Q8cfDLDA/?igsh=abc=="
-    mirrored = instagram_url_to_mirror(tracked, "vxinstagram.com")
-    assert mirrored == "https://www.vxinstagram.com/reel/DS0Q8cfDLDA/"
+    mirrored = instagram_url_to_mirror(tracked, "kkclip.com")
+    assert mirrored == "https://www.kkclip.com/reel/DS0Q8cfDLDA/"
     assert "igsh" not in mirrored
+    print("   OK")
+
+
+def test_preview_parse():
+    print("\nTesting preview_check…")
+    from preview_check import page_likely_has_preview, mirror_host_chain
+
+    assert page_likely_has_preview('<meta property="og:video" content="x">')
+    assert not page_likely_has_preview("<html></html>")
+    chain = mirror_host_chain("kkclip.com", ("vxinstagram.com", "kkclip.com"))
+    assert chain == ["kkclip.com", "vxinstagram.com"]
     print("   OK")
 
 
@@ -57,7 +68,7 @@ def test_tiktok_urls():
 
 def main() -> int:
     print("Social links bot — smoke tests")
-    tests = [test_link_mirror, test_tiktok_urls, test_bot_import]
+    tests = [test_link_mirror, test_preview_parse, test_tiktok_urls, test_bot_import]
     ok = True
     for t in tests:
         try:

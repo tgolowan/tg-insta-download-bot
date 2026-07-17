@@ -43,8 +43,26 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
 
 # Host only — Instagram URLs become https://www.<MIRROR_HOST>/reel/…/
-# vxinstagram.com serves Open Graph for Telegram; kkclip.com often 404s.
-MIRROR_HOST = os.getenv("MIRROR_HOST", "vxinstagram.com")
+MIRROR_HOST = os.getenv("MIRROR_HOST", "kkclip.com")
+
+def _parse_mirror_fallbacks(raw: Optional[str]) -> tuple:
+    default = ("vxinstagram.com", "zzinstagram.com")
+    if raw is None:
+        return default
+    s = raw.strip()
+    if not s:
+        return default
+    out = tuple(p.strip() for p in s.split(",") if p.strip())
+    return out if out else default
+
+
+MIRROR_FALLBACK_HOSTS = _parse_mirror_fallbacks(os.getenv("MIRROR_FALLBACK_HOSTS"))
+
+CHECK_LINK_PREVIEW = os.getenv("CHECK_LINK_PREVIEW", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 RESTART_ON_STOP = os.getenv("RESTART_ON_STOP", "true").lower() in ("1", "true", "yes")
 

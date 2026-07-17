@@ -22,12 +22,15 @@ from config import (
     ALLOWED_CHAT_IDS,
     ALLOW_PRIVATE_CHAT,
     BOT_TOKEN,
+    CHECK_LINK_PREVIEW,
     ENABLE_TIKTOK_DOWNLOAD,
     LOG_LINK_ACTIVITY,
+    MIRROR_FALLBACK_HOSTS,
     MIRROR_HOST,
     RESTART_ON_STOP,
 )
-from link_mirror import replace_instagram_hosts
+from link_mirror import extract_instagram_urls, replace_instagram_hosts_checked
+from preview_check import mirror_host_chain
 from tiktok_downloader import TikTokDownloader
 from tiktok_urls import extract_tiktok_urls
 
@@ -67,6 +70,8 @@ class SocialLinksBot:
 
     def __init__(self):
         self.mirror_host = MIRROR_HOST
+        self._mirror_hosts = mirror_host_chain(MIRROR_HOST, MIRROR_FALLBACK_HOSTS)
+        self._check_preview = CHECK_LINK_PREVIEW
         self._allowed_chat_ids = ALLOWED_CHAT_IDS
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
         self.application = Application.builder().token(BOT_TOKEN).build()
@@ -157,9 +162,13 @@ class SocialLinksBot:
         lines = [
             "<b>Instagram</b>",
             "Paste a link in message text <i>or</i> in a photo/video <b>caption</b>. ",
-            "I'll rewrite the host to ",
-            f"<code>www.{host}</code> (set <code>MIRROR_HOST</code>) for link previews.",
+            f"I'll try <code>www.{host}</code> first, probe the page for preview tags, ",
+            "then fall back to other mirrors if needed.",
         ]
+        if self._check_preview:
+            fb = ", ".join(html.escape(h) for h in self._mirror_hosts[1:3])
+            if fb:
+                lines.append(f"Fallback hosts: <code>{fb}</code> …")
         if ENABLE_TIKTOK_DOWNLOAD:
             lines += [
                 "",
@@ -192,7 +201,12 @@ class SocialLinksBot:
         if not self._chat_is_allowed(message.chat):
             return
 
-        mirror_text, mirrored = replace_instagram_hosts(body, self.mirror_host)
+        mirror_text, mirrored = await asyncio.to_thread(
+            replace_instagram_hosts_checked,
+            body,
+            self._mirror_hosts,
+            verify_preview=self._check_preview,
+        )
         if mirrored:
             if LOG_LINK_ACTIVITY:
                 logger.info(
@@ -203,6 +217,11 @@ class SocialLinksBot:
             await message.reply_text(
                 mirror_text,
                 disable_web_page_preview=False,
+            )
+        elif self._check_preview and extract_instagram_urls(body):
+            logger.warning(
+                "Instagram link(s) in chat_id=%s: no mirror passed preview probe",
+                message.chat_id,
             )
 
         if self.downloader:

@@ -1,5 +1,6 @@
 python-telegram-bot==20.7
 python-dotenv==1.0.0
 flask==3.0.0
+httpx~=0.25.2
 yt-dlp>=2024.10.22
 curl-cffi>=0.10.0
