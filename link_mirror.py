@@ -68,12 +68,24 @@ def replace_instagram_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
     return _INSTAGRAM_RE.sub(repl, text), changed
 
 
+def _unchecked_fallback_host(mirror_hosts: Sequence[str]) -> str:
+    """Prefer eeinstagram.com (real video embeds), then instagram7.com."""
+    from preview_check import PREFERRED_MIRROR_HOSTS
+
+    for preferred in PREFERRED_MIRROR_HOSTS:
+        for h in mirror_hosts:
+            if normalize_mirror_host(h) == preferred:
+                return h
+    return mirror_hosts[0]
+
+
 def replace_instagram_hosts_checked(
     text: str,
     mirror_hosts: Sequence[str],
     *,
     verify_preview: bool = True,
     preview_timeout: float = 8.0,
+    fallback_unchecked: bool = True,
 ) -> Tuple[str, bool]:
     """
     Rewrite instagram.com URLs using mirror_hosts in order.
@@ -102,6 +114,10 @@ def replace_instagram_hosts_checked(
 
         picked = pick_working_mirror(u, mirror_hosts, timeout=preview_timeout)
         if not picked:
+            if fallback_unchecked:
+                mirrored = instagram_url_to_mirror(u, _unchecked_fallback_host(mirror_hosts))
+                changed = True
+                return mirrored + trailing
             return raw_full
         mirrored, _host = picked
         changed = True

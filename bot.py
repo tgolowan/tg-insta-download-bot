@@ -27,6 +27,7 @@ from config import (
     LOG_LINK_ACTIVITY,
     MIRROR_FALLBACK_HOSTS,
     MIRROR_HOST,
+    PREVIEW_FALLBACK_UNCHECKED,
     PREVIEW_PROBE_TIMEOUT,
     RESTART_ON_STOP,
 )
@@ -73,8 +74,12 @@ class SocialLinksBot:
         self.mirror_host = MIRROR_HOST
         self._mirror_hosts = mirror_host_chain(MIRROR_HOST, MIRROR_FALLBACK_HOSTS)
         self._check_preview = CHECK_LINK_PREVIEW
+        self._preview_fallback_unchecked = PREVIEW_FALLBACK_UNCHECKED
         self._preview_timeout = PREVIEW_PROBE_TIMEOUT
         self._allowed_chat_ids = ALLOWED_CHAT_IDS
+        # Telegram re-sends edited_message when link previews attach (same text).
+        self._handled_bodies: dict[tuple[int, int], str] = {}
+        self._handled_bodies_max = 4000
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
         self.application = Application.builder().token(BOT_TOKEN).build()
         self._register_handlers()
@@ -99,6 +104,16 @@ class SocialLinksBot:
         if ALLOW_PRIVATE_CHAT and chat.type == ChatType.PRIVATE:
             return True
         return chat.id in self._allowed_chat_ids
+
+    def _remember_handled_body(self, chat_id: int, message_id: int, body: str) -> None:
+        if len(self._handled_bodies) >= self._handled_bodies_max:
+            drop = self._handled_bodies_max // 2
+            for key in list(self._handled_bodies.keys())[:drop]:
+                del self._handled_bodies[key]
+        self._handled_bodies[(chat_id, message_id)] = body
+
+    def _already_handled(self, chat_id: int, message_id: int, body: str) -> bool:
+        return self._handled_bodies.get((chat_id, message_id)) == body
 
     async def cmd_chatid(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Always works — use this to read a group's id before adding it to ALLOWED_CHAT_IDS."""
@@ -164,8 +179,8 @@ class SocialLinksBot:
         lines = [
             "<b>Instagram</b>",
             "Paste a link in message text <i>or</i> in a photo/video <b>caption</b>. ",
-            f"I'll try <code>www.{host}</code> first, probe the page for preview tags, ",
-            "then fall back to other mirrors if needed.",
+            f"I'll try mirrors in order (<code>eeinstagram.com</code> first for video previews), ",
+            "probe each page, then fall back if needed.",
         ]
         if self._check_preview:
             fb = ", ".join(html.escape(h) for h in self._mirror_hosts[1:3])
@@ -200,8 +215,22 @@ class SocialLinksBot:
         if not body:
             return
 
+        if message.from_user and message.from_user.is_bot:
+            return
+
         if not self._chat_is_allowed(message.chat):
             return
+
+        if self._already_handled(message.chat_id, message.message_id, body):
+            if LOG_LINK_ACTIVITY:
+                logger.info(
+                    "Skip duplicate chat_id=%s msg_id=%s (edited/preview attach)",
+                    message.chat_id,
+                    message.message_id,
+                )
+            return
+
+        self._remember_handled_body(message.chat_id, message.message_id, body)
 
         mirror_text, mirrored = await asyncio.to_thread(
             replace_instagram_hosts_checked,
@@ -209,6 +238,7 @@ class SocialLinksBot:
             self._mirror_hosts,
             verify_preview=self._check_preview,
             preview_timeout=self._preview_timeout,
+            fallback_unchecked=self._preview_fallback_unchecked,
         )
         if mirrored:
             if LOG_LINK_ACTIVITY:
@@ -221,9 +251,9 @@ class SocialLinksBot:
                 mirror_text,
                 disable_web_page_preview=False,
             )
-        elif self._check_preview and extract_instagram_urls(body):
+        elif extract_instagram_urls(body):
             logger.warning(
-                "Instagram link(s) in chat_id=%s: no mirror passed preview probe",
+                "Instagram link(s) in chat_id=%s: could not mirror",
                 message.chat_id,
             )
 

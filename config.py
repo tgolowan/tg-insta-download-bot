@@ -42,14 +42,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
 
-# Host only — Instagram URLs become https://www.<MIRROR_HOST>/reel/…/
-MIRROR_HOST = os.getenv("MIRROR_HOST", "kkclip.com")
+# Display / fallback host — probe order always tries instagram7.com first.
+MIRROR_HOST = os.getenv("MIRROR_HOST", "instagram7.com")
 
 def _parse_mirror_fallbacks(raw: Optional[str]) -> tuple:
     default = (
         "instagram7.com",
         "vxinstagram.com",
-        "eeinstagram.com",
         "zzinstagram.com",
     )
     if raw is None:
@@ -66,6 +65,14 @@ MIRROR_FALLBACK_HOSTS = _parse_mirror_fallbacks(os.getenv("MIRROR_FALLBACK_HOSTS
 PREVIEW_PROBE_TIMEOUT = float(os.getenv("PREVIEW_PROBE_TIMEOUT", "8"))
 
 CHECK_LINK_PREVIEW = os.getenv("CHECK_LINK_PREVIEW", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# When every mirror fails the preview probe, still reply with the first fallback host
+# (usually instagram7.com) without probing — avoids silent no-ops on slow networks.
+PREVIEW_FALLBACK_UNCHECKED = os.getenv("PREVIEW_FALLBACK_UNCHECKED", "true").lower() in (
     "1",
     "true",
     "yes",

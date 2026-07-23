@@ -23,18 +23,49 @@ def test_link_mirror():
     mirrored = instagram_url_to_mirror(tracked, "kkclip.com")
     assert mirrored == "https://www.kkclip.com/reel/DS0Q8cfDLDA/"
     assert "igsh" not in mirrored
+
+    from link_mirror import extract_instagram_urls, replace_instagram_hosts_checked
+
+    hyphen = "https://www.instagram.com/reel/Da-HxxeN_mz/?igsh=MTI2bm81am43Nzd6Zw=="
+    assert extract_instagram_urls(hyphen)
+    out, changed = replace_instagram_hosts_checked(
+        hyphen,
+        ("kkclip.com", "instagram7.com"),
+        verify_preview=False,
+    )
+    assert changed
+    assert "kkclip.com/reel/Da-HxxeN_mz/" in out
     print("   OK")
 
 
 def test_preview_parse():
     print("\nTesting preview_check…")
-    from preview_check import page_likely_has_preview, mirror_host_chain
+    from preview_check import (
+        mirror_host_chain,
+        page_likely_has_preview,
+        pick_working_mirror,
+        preview_score,
+    )
 
     assert page_likely_has_preview('<meta property="og:video" content="x">')
     assert not page_likely_has_preview("<html></html>")
-    chain = mirror_host_chain("kkclip.com", ("instagram7.com", "vxinstagram.com"))
-    assert chain[0] == "kkclip.com"
-    assert "instagram7.com" in chain
+    placeholder = (
+        '<meta property="og:title" content="Instagram7 fixed preview">'
+        '<meta property="og:image" content="https://www.instagram7.com/fallback/Ab.png">'
+        "Instagram did not provide public media for this post."
+    )
+    assert preview_score(placeholder) == 0
+    assert not page_likely_has_preview(placeholder)
+
+    chain = mirror_host_chain("vxinstagram.com", ("kkclip.com", "vxinstagram.com"))
+    assert chain[0] == "eeinstagram.com"
+    assert chain[1] == "instagram7.com"
+    assert "vxinstagram.com" in chain
+
+    reel = "https://www.instagram.com/reel/DbIbyjgIlDZ/"
+    picked = pick_working_mirror(reel, chain, timeout=15)
+    assert picked is not None
+    assert "eeinstagram.com" in picked[0], picked
     print("   OK")
 
 
