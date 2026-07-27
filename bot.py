@@ -31,7 +31,11 @@ from config import (
     PREVIEW_PROBE_TIMEOUT,
     RESTART_ON_STOP,
 )
-from link_mirror import extract_instagram_urls, replace_instagram_hosts_checked
+from link_mirror import (
+    collect_message_link_text,
+    extract_instagram_urls,
+    replace_instagram_hosts_checked,
+)
 from preview_check import mirror_host_chain
 from tiktok_downloader import TikTokDownloader
 from tiktok_urls import extract_tiktok_urls
@@ -211,7 +215,7 @@ class SocialLinksBot:
         message = update.message or update.edited_message
         if not message:
             return
-        body = (message.text or message.caption or "").strip()
+        body = collect_message_link_text(message)
         if not body:
             return
 
@@ -221,7 +225,8 @@ class SocialLinksBot:
         if not self._chat_is_allowed(message.chat):
             return
 
-        if self._already_handled(message.chat_id, message.message_id, body):
+        is_edit = update.edited_message is not None
+        if is_edit and self._already_handled(message.chat_id, message.message_id, body):
             if LOG_LINK_ACTIVITY:
                 logger.info(
                     "Skip duplicate chat_id=%s msg_id=%s (edited/preview attach)",
@@ -229,8 +234,6 @@ class SocialLinksBot:
                     message.message_id,
                 )
             return
-
-        self._remember_handled_body(message.chat_id, message.message_id, body)
 
         mirror_text, mirrored = await asyncio.to_thread(
             replace_instagram_hosts_checked,
@@ -240,17 +243,28 @@ class SocialLinksBot:
             preview_timeout=self._preview_timeout,
             fallback_unchecked=self._preview_fallback_unchecked,
         )
+        thread_id = getattr(message, "message_thread_id", None)
         if mirrored:
             if LOG_LINK_ACTIVITY:
                 logger.info(
                     "Handled Instagram mirror chat_id=%s topic=%s",
                     message.chat_id,
-                    getattr(message, "message_thread_id", None),
+                    thread_id,
                 )
-            await message.reply_text(
-                mirror_text,
-                disable_web_page_preview=False,
-            )
+            try:
+                await message.reply_text(
+                    mirror_text,
+                    disable_web_page_preview=False,
+                    message_thread_id=thread_id,
+                )
+                self._remember_handled_body(message.chat_id, message.message_id, body)
+            except TelegramError as exc:
+                logger.error(
+                    "Instagram mirror reply failed chat_id=%s msg_id=%s: %s",
+                    message.chat_id,
+                    message.message_id,
+                    exc,
+                )
         elif extract_instagram_urls(body):
             logger.warning(
                 "Instagram link(s) in chat_id=%s: could not mirror",

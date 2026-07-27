@@ -9,9 +9,16 @@ from urllib.parse import urlparse, urlunparse
 _TRAILING = frozenset(".,);:!?\"]'\u00bb")
 
 _INSTAGRAM_RE = re.compile(
-    r"https?://(?:[\w-]+\.)*instagram\.com(?:/[^\s\]\}\)<>\"']*)?",
+    r"(?:https?://)?(?:[\w-]+\.)*instagram\.com(?:/[^\s\]\}\)<>\"']*)?",
     re.IGNORECASE,
 )
+
+
+def _ensure_instagram_scheme(url: str) -> str:
+    u = url.strip()
+    if not re.match(r"https?://", u, re.IGNORECASE):
+        u = "https://" + u.lstrip("/")
+    return u
 
 
 def normalize_mirror_host(raw: str) -> str:
@@ -46,10 +53,23 @@ def extract_instagram_urls(text: str) -> List[str]:
     found: List[str] = []
     for m in _INSTAGRAM_RE.finditer(text):
         u, _ = _strip_trailing_noise(m.group(0))
+        u = _ensure_instagram_scheme(u)
         nl = urlparse(u).netloc.lower().removeprefix("www.")
         if nl.endswith("instagram.com"):
             found.append(u)
     return found
+
+
+def collect_message_link_text(message) -> str:
+    """Message text/caption plus hidden URLs from TEXT_LINK entities."""
+    base = (message.text or message.caption or "").strip()
+    chunks = [base] if base else []
+    entities = message.entities or message.caption_entities or []
+    for ent in entities:
+        url = getattr(ent, "url", None)
+        if url:
+            chunks.append(url.strip())
+    return "\n".join(c for c in chunks if c).strip()
 
 
 def replace_instagram_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
@@ -59,6 +79,7 @@ def replace_instagram_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
         nonlocal changed
         raw_full = match.group(0)
         u, trailing = _strip_trailing_noise(raw_full)
+        u = _ensure_instagram_scheme(u)
         nl = urlparse(u).netloc.lower().removeprefix("www.")
         if not u or not nl.endswith("instagram.com"):
             return raw_full
@@ -101,6 +122,7 @@ def replace_instagram_hosts_checked(
         nonlocal changed
         raw_full = match.group(0)
         u, trailing = _strip_trailing_noise(raw_full)
+        u = _ensure_instagram_scheme(u)
         nl = urlparse(u).netloc.lower().removeprefix("www.")
         if not u or not nl.endswith("instagram.com"):
             return raw_full

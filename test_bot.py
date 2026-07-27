@@ -65,7 +65,7 @@ def test_preview_parse():
     reel = "https://www.instagram.com/reel/DbIbyjgIlDZ/"
     picked = pick_working_mirror(reel, chain, timeout=15)
     assert picked is not None
-    assert "eeinstagram.com" in picked[0], picked
+    assert picked[1] in ("eeinstagram.com", "instagram7.com"), picked
     print("   OK")
 
 

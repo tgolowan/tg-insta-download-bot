@@ -49,7 +49,6 @@ def _parse_mirror_fallbacks(raw: Optional[str]) -> tuple:
     default = (
         "instagram7.com",
         "vxinstagram.com",
-        "zzinstagram.com",
     )
     if raw is None:
         return default

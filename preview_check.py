@@ -139,16 +139,16 @@ def pick_working_mirror(
 ) -> Optional[Tuple[str, str]]:
     best: Optional[Tuple[str, str]] = None
     best_score = 0
+    per_host = min(timeout, 6.0)
     for host in mirror_hosts:
         host = host.strip()
         if not host:
             continue
         mirrored = instagram_url_to_mirror(instagram_url, host)
-        score = fetch_preview_score(mirrored, timeout=timeout)
+        score = fetch_preview_score(mirrored, timeout=per_host)
         if score > best_score:
             best_score = score
             best = (mirrored, host)
-        # og:video / player card — good enough for Telegram reel previews.
         if score >= 10:
             break
     return best if best_score > 0 else None
