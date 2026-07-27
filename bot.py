@@ -85,6 +85,9 @@ class SocialLinksBot:
         self._handled_bodies: dict[tuple[int, int], str] = {}
         self._handled_bodies_max = 4000
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
+        self._build_application()
+
+    def _build_application(self) -> None:
         self.application = Application.builder().token(BOT_TOKEN).build()
         self._register_handlers()
 
@@ -463,14 +466,18 @@ class SocialLinksBot:
         while True:
             try:
                 self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+            except KeyboardInterrupt:
+                logger.info("Bot stopped by user")
+                return
             except Exception as e:
-                logger.error("Polling stopped: %s", e)
+                logger.error("Polling stopped: %s", e, exc_info=True)
 
-            if RESTART_ON_STOP:
-                logger.warning("Restarting in 5 seconds...")
-                time.sleep(5)
-            else:
-                break
+            if not RESTART_ON_STOP:
+                return
+
+            logger.warning("Rebuilding application; restarting in 5 seconds...")
+            time.sleep(5)
+            self._build_application()
 
 
 def main() -> None:

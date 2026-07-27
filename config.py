@@ -77,7 +77,9 @@ PREVIEW_FALLBACK_UNCHECKED = os.getenv("PREVIEW_FALLBACK_UNCHECKED", "true").low
     "yes",
 )
 
-RESTART_ON_STOP = os.getenv("RESTART_ON_STOP", "true").lower() in ("1", "true", "yes")
+# In-process restart after polling stops. On Railway prefer false — the platform
+# restarts the container; reusing PTB without rebuilding closes the event loop.
+RESTART_ON_STOP = os.getenv("RESTART_ON_STOP", "false").lower() in ("1", "true", "yes")
 
 ENABLE_TIKTOK_DOWNLOAD = os.getenv(
     "ENABLE_TIKTOK_DOWNLOAD", "true"
