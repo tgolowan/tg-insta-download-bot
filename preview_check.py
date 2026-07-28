@@ -26,6 +26,7 @@ _OG_RE = re.compile(
 _PLACEHOLDER_MARKERS = (
     "instagram did not provide public media",
     "instagram7 fixed preview",
+    "post not found",
 )
 
 _FALLBACK_IMAGE_RE = re.compile(r"instagram7\.com/fallback/", re.IGNORECASE)
@@ -57,24 +58,56 @@ def _is_placeholder_preview(html: str) -> bool:
     return bool(_FALLBACK_IMAGE_RE.search(html[:120_000]))
 
 
-def preview_score(html: str) -> int:
+_OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+
+
+def is_photo_post(instagram_url: str) -> bool:
+    path = urlparse(instagram_url).path.lower()
+    return "/p/" in path
+
+
+def _og_video_is_real_video(url: str) -> bool:
+    u = url.lower().split("?", 1)[0]
+    if any(u.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
+        return False
+    if "/offload/" in u or "/grid/" in u:
+        return False
+    return True
+
+
+def preview_score(html: str, *, photo_post: bool = False) -> int:
     """
-    Higher = better Telegram unfurl. Reels need og:video; instagram7 fallback PNGs score 0.
+    Higher = better Telegram unfurl.
+    Reels: og:video. Photo posts (/p/): og:image (vx often mis-tags JPEG as og:video).
     """
     if not html or _is_placeholder_preview(html):
         return 0
     chunk = html[:120_000]
     score = 0
-    if _OG_VIDEO_RE.search(chunk):
-        score += 10
-    if _TWITTER_PLAYER_RE.search(chunk):
-        score += 5
-    if re.search(
-        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-        chunk,
-        re.IGNORECASE,
-    ):
-        score += 3
+    img_m = _OG_IMAGE_RE.search(chunk)
+    vid_m = _OG_VIDEO_RE.search(chunk)
+
+    if photo_post:
+        if img_m:
+            img_url = img_m.group(1)
+            if _FALLBACK_IMAGE_RE.search(img_url):
+                return 0
+            score += 8
+            if "instagram7.com/grid" in img_url.lower():
+                score += 3
+        # Ignore og:video on /p/ — mirrors often point to JPEGs, Telegram won't unfurl.
+        if _TWITTER_PLAYER_RE.search(chunk) and score >= 8:
+            score += 2
+    else:
+        if vid_m and _og_video_is_real_video(vid_m.group(1)):
+            score += 10
+        if _TWITTER_PLAYER_RE.search(chunk):
+            score += 5
+        if img_m:
+            score += 3
     if re.search(
         r'<meta[^>]+property=["\']og:title["\']',
         chunk,
@@ -105,7 +138,12 @@ def fetch_preview_ok(url: str, timeout: float = 8.0) -> bool:
     return fetch_preview_score(url, timeout=timeout) > 0
 
 
-def fetch_preview_score(url: str, timeout: float = 8.0) -> int:
+def fetch_preview_score(
+    url: str,
+    timeout: float = 8.0,
+    *,
+    instagram_url: Optional[str] = None,
+) -> int:
     html, final, status = _fetch_preview_html(url, timeout)
     if not html or not final:
         return 0
@@ -118,7 +156,8 @@ def fetch_preview_score(url: str, timeout: float = 8.0) -> int:
     if status >= 400:
         logger.info("Preview probe %s -> HTTP %s", url, status)
         return 0
-    score = preview_score(html)
+    photo = is_photo_post(instagram_url or url)
+    score = preview_score(html, photo_post=photo)
     if score <= 0:
         logger.info("Preview probe %s -> placeholder or no usable OG (final %s)", url, final)
     else:
@@ -140,16 +179,22 @@ def pick_working_mirror(
     best: Optional[Tuple[str, str]] = None
     best_score = 0
     per_host = min(timeout, 6.0)
-    for host in mirror_hosts:
+    photo = is_photo_post(instagram_url)
+    hosts = _hosts_for_instagram_url(instagram_url, mirror_hosts)
+    for host in hosts:
         host = host.strip()
         if not host:
             continue
         mirrored = instagram_url_to_mirror(instagram_url, host)
-        score = fetch_preview_score(mirrored, timeout=per_host)
+        score = fetch_preview_score(
+            mirrored, timeout=per_host, instagram_url=instagram_url
+        )
         if score > best_score:
             best_score = score
             best = (mirrored, host)
-        if score >= 10:
+        if photo and score >= 10:
+            break
+        if not photo and score >= 10:
             break
     return best if best_score > 0 else None
 
@@ -157,8 +202,32 @@ def pick_working_mirror(
 PREFERRED_MIRROR_HOSTS = ("eeinstagram.com", "instagram7.com")
 
 
+def _hosts_for_instagram_url(
+    instagram_url: str, mirror_hosts: Sequence[str]
+) -> List[str]:
+    """Reels: ee first. Photo posts (/p/): instagram7 first."""
+    preferred = (
+        ("instagram7.com", "eeinstagram.com")
+        if is_photo_post(instagram_url)
+        else ("eeinstagram.com", "instagram7.com")
+    )
+    normalized = []
+    for h in mirror_hosts:
+        n = h.strip().lower().removeprefix("www.")
+        if n:
+            normalized.append(n)
+    ranked: List[str] = []
+    for p in preferred:
+        if p in normalized and p not in ranked:
+            ranked.append(p)
+    for n in normalized:
+        if n not in ranked:
+            ranked.append(n)
+    return ranked
+
+
 def mirror_host_chain(primary: str, fallbacks: Sequence[str]) -> List[str]:
-    """Build probe order; eeinstagram.com first (real og:video), then instagram7.com."""
+    """eeinstagram first for reels; instagram7 strong for /p/ photo posts."""
     seen: set[str] = set()
     chain: List[str] = []
 
