@@ -70,6 +70,31 @@ def probe_video_file(path: str) -> Dict[str, Any]:
     return meta
 
 
+def probe_has_audio(path: str) -> bool:
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return proc.returncode == 0 and bool((proc.stdout or "").strip())
+    except Exception as exc:
+        logger.warning("ffprobe audio check failed for %s: %s", path, exc)
+        return False
+
+
 def normalize_for_telegram(src: str) -> str:
     """
     Remux to h264/aac with square pixels — mobile Telegram mis-renders some TikTok HEVC files.
@@ -77,35 +102,47 @@ def normalize_for_telegram(src: str) -> str:
     """
     base, _ = os.path.splitext(src)
     dst = f"{base}_tg.mp4"
+    has_audio = probe_has_audio(src)
     try:
-        proc = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                src,
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            src,
+            "-map",
+            "0:v:0",
+        ]
+        if has_audio:
+            cmd += [
                 "-map",
-                "0:v:0",
-                "-map",
-                "0:a?",
-                "-vf",
-                "setsar=1",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
-                "-pix_fmt",
-                "yuv420p",
+                "0:a:0",
                 "-c:a",
                 "aac",
                 "-b:a",
-                "128k",
-                "-movflags",
-                "+faststart",
-                dst,
-            ],
+                "192k",
+                "-ar",
+                "44100",
+                "-shortest",
+            ]
+        else:
+            logger.warning("normalize_for_telegram: no audio stream in %s", src)
+        cmd += [
+            "-vf",
+            "setsar=1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            dst,
+        ]
+        proc = subprocess.run(
+            cmd,
             capture_output=True,
             text=True,
             timeout=120,
@@ -134,17 +171,17 @@ class TikTokDownloader:
         # Create download directory
         os.makedirs(DOWNLOAD_PATH, exist_ok=True)
         
-        # TikTok ladders: forcing h264+mp4 often yields ~30 FPS AVC while TikTok publishes
-        # smoother video on bytevc/hevc (~60 FPS). Prefer high FPS, then broader fallbacks.
+        # TikTok bytevc/hevc ladders are often video-only in the MP4; h264 muxes include audio.
         self.ydl_opts = {
             'format': (
-                'bestvideo*[fps>=50]+bestaudio/'
-                'bestvideo*+bestaudio/'
-                'bestvideo+bestaudio/'
-                'best'
+                'best[vcodec^=avc][acodec!=none][ext=mp4]/'
+                'best[vcodec=h264][acodec!=none]/'
+                'download/best[acodec!=none]/b'
             ),
-            'format_sort': ['fps', 'res'],
             'merge_output_format': 'mp4',
+            'postprocessors': [
+                {'key': 'FFmpegVideoRemuxer', 'preferedformat': 'mp4'},
+            ],
             'outtmpl': os.path.join(DOWNLOAD_PATH, '%(id)s.%(ext)s'),
             'quiet': False,
             'no_warnings': False,
@@ -207,6 +244,43 @@ class TikTokDownloader:
             return match.group(1)
         
         return None
+
+    def _find_downloaded_file(self, info: dict, url: str) -> Optional[str]:
+        video_id = info.get('id') or self.extract_video_id(url) or 'tiktok_video'
+        video_ext = info.get('ext', 'mp4')
+        possible_files = [
+            os.path.join(DOWNLOAD_PATH, f"{video_id}.{video_ext}"),
+            os.path.join(DOWNLOAD_PATH, f"{video_id}.mp4"),
+            os.path.join(DOWNLOAD_PATH, f"{info.get('display_id', video_id)}.{video_ext}"),
+            os.path.join(DOWNLOAD_PATH, f"{info.get('display_id', video_id)}.mp4"),
+        ]
+        for file_path in possible_files:
+            if os.path.exists(file_path):
+                return file_path
+        try:
+            files = [
+                f
+                for f in os.listdir(DOWNLOAD_PATH)
+                if os.path.isfile(os.path.join(DOWNLOAD_PATH, f))
+            ]
+            if files:
+                files.sort(
+                    key=lambda x: os.path.getmtime(os.path.join(DOWNLOAD_PATH, x)),
+                    reverse=True,
+                )
+                most_recent = os.path.join(DOWNLOAD_PATH, files[0])
+                if time.time() - os.path.getmtime(most_recent) < 120:
+                    return most_recent
+        except Exception as e:
+            logger.warning("Error finding downloaded file: %s", e)
+        return None
+
+    def _run_download(self, url: str, ydl_opts: dict) -> Optional[str]:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if not info:
+                return None
+            return self._find_downloaded_file(info, url)
     
     def download_video(self, url: str) -> Tuple[bool, str, List[Dict]]:
         """
@@ -271,103 +345,91 @@ class TikTokDownloader:
                 info.get("height"),
             )
 
-            # Download (same yt-dlp options as probe — no narrower h264 override).
-            # Telegram may refuse some codecs as video messages; bot falls back to document.
-            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                try:
-                    ydl.download([url])
-                    
-                    # Find the downloaded file
-                    video_id = info.get('id') or self.extract_video_id(url) or 'tiktok_video'
-                    video_ext = info.get('ext', 'mp4')
-                    
-                    # Try multiple possible file names
-                    possible_files = [
-                        os.path.join(DOWNLOAD_PATH, f"{video_id}.{video_ext}"),
-                        os.path.join(DOWNLOAD_PATH, f"{video_id}.mp4"),
-                        os.path.join(DOWNLOAD_PATH, f"{info.get('display_id', video_id)}.{video_ext}"),
-                        os.path.join(DOWNLOAD_PATH, f"{info.get('display_id', video_id)}.mp4"),
-                    ]
-                    
-                    downloaded_file = None
-                    for file_path in possible_files:
-                        if os.path.exists(file_path):
-                            downloaded_file = file_path
-                            break
-                    
-                    # If still not found, try to find any recently created file in download directory
-                    if not downloaded_file:
-                        try:
-                            files = [f for f in os.listdir(DOWNLOAD_PATH) if os.path.isfile(os.path.join(DOWNLOAD_PATH, f))]
-                            if files:
-                                # Get the most recently created file
-                                files.sort(key=lambda x: os.path.getmtime(os.path.join(DOWNLOAD_PATH, x)), reverse=True)
-                                # Check if it was created recently (within last 60 seconds)
-                                most_recent = os.path.join(DOWNLOAD_PATH, files[0])
-                                if time.time() - os.path.getmtime(most_recent) < 60:
-                                    downloaded_file = most_recent
-                        except Exception as e:
-                            logger.warning(f"Error finding downloaded file: {e}")
-                    
-                    if not downloaded_file or not os.path.exists(downloaded_file):
-                        logger.error(f"Downloaded file not found. Expected: {possible_files[0]}")
-                        return False, "❌ Downloaded file not found. The download may have failed.", []
-                    
-                    # Check actual file size
-                    file_size = os.path.getsize(downloaded_file)
-                    if file_size > MAX_FILE_SIZE:
-                        os.remove(downloaded_file)
-                        return False, ERROR_MESSAGES['file_too_large'], []
-
-                    downloaded_file = normalize_for_telegram(downloaded_file)
-                    file_size = os.path.getsize(downloaded_file)
-                    if file_size > MAX_FILE_SIZE:
-                        os.remove(downloaded_file)
-                        return False, ERROR_MESSAGES['file_too_large'], []
-
-                    vmeta = probe_video_file(downloaded_file)
-                    media_files = [{
-                        'type': 'video',
-                        'file_path': downloaded_file,
-                        'file_size': file_size,
-                        'mime_type': 'video/mp4',
-                        'title': info.get('title', 'TikTok Video'),
-                        'duration': vmeta.get('duration') or info.get('duration', 0),
-                        'width': vmeta.get('width') or info.get('width'),
-                        'height': vmeta.get('height') or info.get('height'),
-                    }]
-                    logger.info(
-                        "TikTok send meta width=%s height=%s duration=%s",
-                        media_files[0].get("width"),
-                        media_files[0].get("height"),
-                        media_files[0].get("duration"),
+            # Download (retry without video-only ladders if mux has no audio).
+            downloaded_file = None
+            try:
+                downloaded_file = self._run_download(url, self.ydl_opts)
+                if downloaded_file and not probe_has_audio(downloaded_file):
+                    logger.warning(
+                        "TikTok file has no audio (%s); retrying with muxed format",
+                        downloaded_file,
                     )
-                    
-                    return True, f"✅ Successfully downloaded TikTok video", media_files
-                    
-                except yt_dlp.utils.DownloadError as e:
-                    error_msg = str(e)
-                    logger.error(f"Download error: {error_msg}")
-                    
-                    # Provide more specific error messages
-                    if "Private video" in error_msg or "This video is not available" in error_msg:
-                        return False, ERROR_MESSAGES['private_account'], []
-                    elif "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg.lower():
-                        return False, ERROR_MESSAGES['private_account'], []
-                    elif "Video unavailable" in error_msg or "unavailable" in error_msg.lower():
-                        return False, "❌ Video is unavailable. It may have been deleted or is not accessible.", []
-                    elif "HTTP Error 403" in error_msg or "403" in error_msg:
-                        return False, "❌ Access forbidden. TikTok may be blocking requests. Please try again later.", []
-                    elif "HTTP Error 429" in error_msg or "429" in error_msg or "rate limit" in error_msg.lower():
-                        return False, ERROR_MESSAGES['rate_limited'], []
-                    elif "HTTP Error" in error_msg:
-                        return False, f"❌ Connection error: {error_msg[:100]}", []
-                    else:
-                        return False, f"❌ Download failed: {error_msg[:150]}", []
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.error(f"Error downloading TikTok video: {error_msg}", exc_info=True)
-                    return False, f"❌ Error: {error_msg[:150]}", []
+                    try:
+                        os.remove(downloaded_file)
+                    except OSError:
+                        pass
+                    retry_opts = {
+                        **self.ydl_opts,
+                        'format': (
+                            'best[vcodec^=avc][acodec!=none]/'
+                            'download/best[acodec!=none]/b'
+                        ),
+                    }
+                    downloaded_file = self._run_download(url, retry_opts)
+
+                if not downloaded_file or not os.path.exists(downloaded_file):
+                    logger.error("Downloaded file not found for %s", url)
+                    return False, "❌ Downloaded file not found. The download may have failed.", []
+
+                if not probe_has_audio(downloaded_file):
+                    logger.error("TikTok download still has no audio track: %s", downloaded_file)
+                    os.remove(downloaded_file)
+                    return False, "❌ Downloaded video has no audio. Try again later.", []
+
+                file_size = os.path.getsize(downloaded_file)
+                if file_size > MAX_FILE_SIZE:
+                    os.remove(downloaded_file)
+                    return False, ERROR_MESSAGES['file_too_large'], []
+
+                downloaded_file = normalize_for_telegram(downloaded_file)
+                file_size = os.path.getsize(downloaded_file)
+                if file_size > MAX_FILE_SIZE:
+                    os.remove(downloaded_file)
+                    return False, ERROR_MESSAGES['file_too_large'], []
+
+                vmeta = probe_video_file(downloaded_file)
+                media_files = [{
+                    'type': 'video',
+                    'file_path': downloaded_file,
+                    'file_size': file_size,
+                    'mime_type': 'video/mp4',
+                    'title': info.get('title', 'TikTok Video'),
+                    'duration': vmeta.get('duration') or info.get('duration', 0),
+                    'width': vmeta.get('width') or info.get('width'),
+                    'height': vmeta.get('height') or info.get('height'),
+                }]
+                logger.info(
+                    "TikTok send meta width=%s height=%s duration=%s has_audio=%s",
+                    media_files[0].get("width"),
+                    media_files[0].get("height"),
+                    media_files[0].get("duration"),
+                    probe_has_audio(downloaded_file),
+                )
+
+                return True, "✅ Successfully downloaded TikTok video", media_files
+
+            except yt_dlp.utils.DownloadError as e:
+                error_msg = str(e)
+                logger.error(f"Download error: {error_msg}")
+
+                if "Private video" in error_msg or "This video is not available" in error_msg:
+                    return False, ERROR_MESSAGES['private_account'], []
+                elif "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg.lower():
+                    return False, ERROR_MESSAGES['private_account'], []
+                elif "Video unavailable" in error_msg or "unavailable" in error_msg.lower():
+                    return False, "❌ Video is unavailable. It may have been deleted or is not accessible.", []
+                elif "HTTP Error 403" in error_msg or "403" in error_msg:
+                    return False, "❌ Access forbidden. TikTok may be blocking requests. Please try again later.", []
+                elif "HTTP Error 429" in error_msg or "429" in error_msg or "rate limit" in error_msg.lower():
+                    return False, ERROR_MESSAGES['rate_limited'], []
+                elif "HTTP Error" in error_msg:
+                    return False, f"❌ Connection error: {error_msg[:100]}", []
+                else:
+                    return False, f"❌ Download failed: {error_msg[:150]}", []
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Error downloading TikTok video: {error_msg}", exc_info=True)
+                return False, f"❌ Error: {error_msg[:150]}", []
                     
         except Exception as e:
             logger.error(f"Error processing TikTok URL: {e}")
