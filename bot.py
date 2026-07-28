@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 from telegram import Update
 from telegram.constants import ChatType
-from telegram.error import Conflict, TelegramError
+from telegram.error import Conflict, NetworkError, TelegramError, TimedOut
 from telegram.ext import (
     Application,
     BaseHandler,
@@ -30,6 +30,11 @@ from config import (
     PREVIEW_FALLBACK_UNCHECKED,
     PREVIEW_PROBE_TIMEOUT,
     RESTART_ON_STOP,
+    TELEGRAM_CONNECT_TIMEOUT,
+    TELEGRAM_GET_UPDATES_READ_TIMEOUT,
+    TELEGRAM_POOL_TIMEOUT,
+    TELEGRAM_READ_TIMEOUT,
+    TELEGRAM_WRITE_TIMEOUT,
 )
 from link_mirror import (
     collect_message_link_text,
@@ -88,7 +93,16 @@ class SocialLinksBot:
         self._build_application()
 
     def _build_application(self) -> None:
-        self.application = Application.builder().token(BOT_TOKEN).build()
+        self.application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .connect_timeout(TELEGRAM_CONNECT_TIMEOUT)
+            .read_timeout(TELEGRAM_READ_TIMEOUT)
+            .write_timeout(TELEGRAM_WRITE_TIMEOUT)
+            .pool_timeout(TELEGRAM_POOL_TIMEOUT)
+            .get_updates_read_timeout(TELEGRAM_GET_UPDATES_READ_TIMEOUT)
+            .build()
+        )
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -406,6 +420,9 @@ class SocialLinksBot:
                 "Stop the duplicate (e.g. local python bot.py vs Railway)."
             )
             return
+        if isinstance(err, (TimedOut, NetworkError)):
+            logger.warning("Transient Telegram network error: %s", err)
+            return
         logger.error(
             "Unhandled error while processing update",
             exc_info=err,
@@ -469,6 +486,14 @@ class SocialLinksBot:
             except KeyboardInterrupt:
                 logger.info("Bot stopped by user")
                 return
+            except (TimedOut, NetworkError) as e:
+                logger.warning(
+                    "Telegram API unreachable (%s); retry in 10 seconds…",
+                    e,
+                )
+                time.sleep(10)
+                self._build_application()
+                continue
             except Exception as e:
                 logger.error("Polling stopped: %s", e, exc_info=True)
 

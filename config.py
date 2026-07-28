@@ -81,6 +81,16 @@ PREVIEW_FALLBACK_UNCHECKED = os.getenv("PREVIEW_FALLBACK_UNCHECKED", "true").low
 # restarts the container; reusing PTB without rebuilding closes the event loop.
 RESTART_ON_STOP = os.getenv("RESTART_ON_STOP", "false").lower() in ("1", "true", "yes")
 
+# python-telegram-bot → api.telegram.org (Railway can be slow; defaults are 5s).
+TELEGRAM_CONNECT_TIMEOUT = float(os.getenv("TELEGRAM_CONNECT_TIMEOUT", "30"))
+TELEGRAM_READ_TIMEOUT = float(os.getenv("TELEGRAM_READ_TIMEOUT", "30"))
+TELEGRAM_WRITE_TIMEOUT = float(os.getenv("TELEGRAM_WRITE_TIMEOUT", "30"))
+TELEGRAM_POOL_TIMEOUT = float(os.getenv("TELEGRAM_POOL_TIMEOUT", "30"))
+# Long polling: read timeout must exceed the poll interval (~10s).
+TELEGRAM_GET_UPDATES_READ_TIMEOUT = float(
+    os.getenv("TELEGRAM_GET_UPDATES_READ_TIMEOUT", "35")
+)
+
 ENABLE_TIKTOK_DOWNLOAD = os.getenv(
     "ENABLE_TIKTOK_DOWNLOAD", "true"
 ).lower() in ("1", "true", "yes")
