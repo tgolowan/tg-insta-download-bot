@@ -69,26 +69,55 @@ def is_photo_post(instagram_url: str) -> bool:
     return "/p/" in path
 
 
-def _og_video_is_real_video(url: str) -> bool:
-    u = url.lower().split("?", 1)[0]
+def _normalize_og_url(raw: str, page_url: str) -> str:
+    u = raw.strip().replace("&amp;", "&")
+    if u.startswith("//"):
+        return "https:" + u
+    if u.startswith("/"):
+        from urllib.parse import urljoin
+
+        return urljoin(page_url, u)
+    return u
+
+
+def _og_video_telegram_ready(
+    raw_url: str, page_url: str, *, photo_post: bool = False
+) -> bool:
+    u = _normalize_og_url(raw_url, page_url).lower().split("?", 1)[0]
+    if not u.startswith("http"):
+        return False
     if any(u.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
         return False
-    if "/offload/" in u or "/grid/" in u:
+    # vx/ee offload JPEGs on /p/ posts are mis-tagged as video.
+    if photo_post and ("/offload/" in u or "/grid/" in u):
         return False
     return True
 
 
-def preview_score(html: str, *, photo_post: bool = False) -> int:
+def _og_description_is_failure(html: str) -> bool:
+    m = re.search(
+        r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']*)["\']',
+        html[:80_000],
+        re.IGNORECASE,
+    )
+    if not m:
+        return False
+    desc = m.group(1).strip().lower()
+    return desc == "post not found" or desc.startswith("post not found")
+
+
+def preview_score(html: str, *, photo_post: bool = False, page_url: str = "") -> int:
     """
     Higher = better Telegram unfurl.
-    Reels: og:video. Photo posts (/p/): og:image (vx often mis-tags JPEG as og:video).
+    Reels: absolute og:video. Photo posts (/p/): og:image (vx often mis-tags JPEG as og:video).
     """
-    if not html or _is_placeholder_preview(html):
+    if not html or _is_placeholder_preview(html) or _og_description_is_failure(html):
         return 0
     chunk = html[:120_000]
     score = 0
     img_m = _OG_IMAGE_RE.search(chunk)
     vid_m = _OG_VIDEO_RE.search(chunk)
+    base = page_url or ""
 
     if photo_post:
         if img_m:
@@ -102,8 +131,13 @@ def preview_score(html: str, *, photo_post: bool = False) -> int:
         if _TWITTER_PLAYER_RE.search(chunk) and score >= 8:
             score += 2
     else:
-        if vid_m and _og_video_is_real_video(vid_m.group(1)):
+        if vid_m and base and _og_video_telegram_ready(
+            vid_m.group(1), base, photo_post=False
+        ):
             score += 10
+            abs_vid = _normalize_og_url(vid_m.group(1), base)
+            if abs_vid.lower().startswith("https://"):
+                score += 2
         if _TWITTER_PLAYER_RE.search(chunk):
             score += 5
         if img_m:
@@ -157,7 +191,7 @@ def fetch_preview_score(
         logger.info("Preview probe %s -> HTTP %s", url, status)
         return 0
     photo = is_photo_post(instagram_url or url)
-    score = preview_score(html, photo_post=photo)
+    score = preview_score(html, photo_post=photo, page_url=final)
     if score <= 0:
         logger.info("Preview probe %s -> placeholder or no usable OG (final %s)", url, final)
     else:
@@ -199,7 +233,7 @@ def pick_working_mirror(
     return best if best_score > 0 else None
 
 
-PREFERRED_MIRROR_HOSTS = ("eeinstagram.com", "instagram7.com")
+PREFERRED_MIRROR_HOSTS = ("instagram7.com", "eeinstagram.com")
 
 
 def _hosts_for_instagram_url(
@@ -209,7 +243,7 @@ def _hosts_for_instagram_url(
     preferred = (
         ("instagram7.com", "eeinstagram.com")
         if is_photo_post(instagram_url)
-        else ("eeinstagram.com", "instagram7.com")
+        else ("instagram7.com", "eeinstagram.com")
     )
     normalized = []
     for h in mirror_hosts:

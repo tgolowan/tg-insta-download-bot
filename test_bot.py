@@ -58,8 +58,8 @@ def test_preview_parse():
     assert not page_likely_has_preview(placeholder)
 
     chain = mirror_host_chain("vxinstagram.com", ("kkclip.com", "vxinstagram.com"))
-    assert chain[0] == "eeinstagram.com"
-    assert chain[1] == "instagram7.com"
+    assert chain[0] == "instagram7.com"
+    assert chain[1] == "eeinstagram.com"
     assert "vxinstagram.com" in chain
 
     reel = "https://www.instagram.com/reel/DbIbyjgIlDZ/"
