@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import List, Optional
+from urllib.parse import urlparse
 
 TIKTOK_URL_RE = re.compile(
     r"https?://(?:www\.|vm\.|vt\.|m\.)?tiktok\.com/[^\s<>\[\]()]+",
     re.IGNORECASE,
 )
 _TRAILING = frozenset(".,);:!?\"]'\u00bb")
+_PHOTO_ID_RE = re.compile(r"/photo/(\d+)")
 
 
 def extract_tiktok_urls(text: str) -> List[str]:
@@ -23,3 +25,12 @@ def extract_tiktok_urls(text: str) -> List[str]:
             seen.add(u)
             out.append(u)
     return out
+
+
+def is_tiktok_photo_url(url: str) -> bool:
+    return "/photo/" in urlparse(url).path.lower()
+
+
+def extract_tiktok_photo_id(url: str) -> Optional[str]:
+    m = _PHOTO_ID_RE.search(urlparse(url).path)
+    return m.group(1) if m else None

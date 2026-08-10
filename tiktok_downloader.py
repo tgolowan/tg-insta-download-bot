@@ -7,12 +7,28 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+import httpx
 import yt_dlp
 
 from config import DOWNLOAD_PATH, MAX_FILE_SIZE, ERROR_MESSAGES
+from tiktok_urls import extract_tiktok_photo_id, is_tiktok_photo_url
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_TIKTOK_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.tiktok.com/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-us,en;q=0.5",
+}
+_PHOTOMODE_IMAGE_RE = re.compile(
+    r"https://p\d+-common-sign\.tiktokcdn[^\"'\s<>]+photomode-image\.jpeg[^\"'\s<>]*",
+    re.IGNORECASE,
+)
 
 
 def probe_video_file(path: str) -> Dict[str, Any]:
@@ -187,17 +203,9 @@ class TikTokDownloader:
             'no_warnings': False,
             'extract_flat': False,
             'noplaylist': True,
-            # TikTok-specific options
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'user_agent': _TIKTOK_HTTP_HEADERS["User-Agent"],
             'referer': 'https://www.tiktok.com/',
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Referer': 'https://www.tiktok.com/',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-            },
+            'http_headers': dict(_TIKTOK_HTTP_HEADERS),
             # Retry options
             'retries': 3,
             'fragment_retries': 3,
@@ -244,6 +252,129 @@ class TikTokDownloader:
             return match.group(1)
         
         return None
+
+    def _resolve_url(self, url: str) -> str:
+        try:
+            with httpx.Client(
+                follow_redirects=True,
+                timeout=20.0,
+                headers=_TIKTOK_HTTP_HEADERS,
+            ) as client:
+                resp = client.get(url)
+            return str(resp.url)
+        except Exception as exc:
+            logger.warning("TikTok URL resolve failed for %s: %s", url, exc)
+            return url
+
+    def _photo_urls_from_embed(self, item_id: str) -> List[str]:
+        embed_url = f"https://www.tiktok.com/embed/v2/{item_id}"
+        try:
+            with httpx.Client(
+                follow_redirects=True,
+                timeout=20.0,
+                headers=_TIKTOK_HTTP_HEADERS,
+            ) as client:
+                resp = client.get(embed_url)
+            if resp.status_code >= 400:
+                return []
+            raw = _PHOTOMODE_IMAGE_RE.findall(resp.text)
+        except Exception as exc:
+            logger.warning("TikTok embed fetch failed for %s: %s", item_id, exc)
+            return []
+
+        seen: set[str] = set()
+        out: List[str] = []
+        for raw_url in raw:
+            u = raw_url.replace("\\u0026", "&").replace("&amp;", "&")
+            key_m = re.search(r"/tos-[^/]+/([^~?]+)", u)
+            key = key_m.group(1) if key_m else u
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(u)
+        return out
+
+    def _photo_post_title(self, resolved_url: str) -> str:
+        video_url = re.sub(r"/photo/", "/video/", resolved_url, count=1)
+        try:
+            with yt_dlp.YoutubeDL(
+                {**self.ydl_opts, "quiet": True, "no_warnings": True}
+            ) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+            if info:
+                return (info.get("title") or info.get("description") or "").strip()
+        except Exception as exc:
+            logger.warning("TikTok photo title probe failed: %s", exc)
+        return "TikTok Photo"
+
+    def _download_photo_post(
+        self, url: str, resolved_url: str
+    ) -> Tuple[bool, str, List[Dict]]:
+        item_id = extract_tiktok_photo_id(resolved_url)
+        if not item_id:
+            return False, ERROR_MESSAGES["unsupported_type"], []
+
+        image_urls = self._photo_urls_from_embed(item_id)
+        if not image_urls:
+            return False, (
+                "❌ Could not load TikTok photo carousel. "
+                "The post may be private or unavailable."
+            ), []
+
+        title = self._photo_post_title(resolved_url)
+        media_files: List[Dict] = []
+
+        try:
+            with httpx.Client(
+                follow_redirects=True,
+                timeout=30.0,
+                headers=_TIKTOK_HTTP_HEADERS,
+            ) as client:
+                for idx, image_url in enumerate(image_urls):
+                    resp = client.get(image_url)
+                    if resp.status_code >= 400:
+                        logger.warning(
+                            "TikTok photo %s image %s HTTP %s",
+                            item_id,
+                            idx,
+                            resp.status_code,
+                        )
+                        continue
+                    if len(resp.content) > MAX_FILE_SIZE:
+                        return False, ERROR_MESSAGES["file_too_large"], []
+                    ext = "jpg"
+                    path = os.path.join(DOWNLOAD_PATH, f"{item_id}_{idx}.{ext}")
+                    with open(path, "wb") as fh:
+                        fh.write(resp.content)
+                    media_files.append(
+                        {
+                            "type": "photo",
+                            "file_path": path,
+                            "file_size": len(resp.content),
+                            "mime_type": resp.headers.get(
+                                "content-type", "image/jpeg"
+                            ),
+                            "title": title,
+                        }
+                    )
+        except Exception as exc:
+            logger.error("TikTok photo download failed: %s", exc, exc_info=True)
+            for media in media_files:
+                try:
+                    os.remove(media["file_path"])
+                except OSError:
+                    pass
+            return False, f"❌ Error downloading TikTok photos: {exc}", []
+
+        if not media_files:
+            return False, ERROR_MESSAGES["unsupported_type"], []
+
+        logger.info(
+            "TikTok photo post %s: downloaded %s image(s)",
+            item_id,
+            len(media_files),
+        )
+        return True, "✅ Successfully downloaded TikTok photos", media_files
 
     def _find_downloaded_file(self, info: dict, url: str) -> Optional[str]:
         video_id = info.get('id') or self.extract_video_id(url) or 'tiktok_video'
@@ -292,7 +423,11 @@ class TikTokDownloader:
         try:
             if not self.is_valid_tiktok_url(url):
                 return False, ERROR_MESSAGES['invalid_link'], []
-            
+
+            resolved = self._resolve_url(url)
+            if is_tiktok_photo_url(resolved):
+                return self._download_photo_post(url, resolved)
+
             # First, get video info to determine aspect ratio
             try:
                 with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
@@ -300,6 +435,11 @@ class TikTokDownloader:
             except yt_dlp.utils.DownloadError as e:
                 error_msg = str(e)
                 logger.error(f"Info extraction error: {error_msg}")
+
+                if "Unsupported URL" in error_msg and "/photo/" in error_msg:
+                    resolved = self._resolve_url(url)
+                    if is_tiktok_photo_url(resolved):
+                        return self._download_photo_post(url, resolved)
                 
                 # Provide more specific error messages
                 if "Private video" in error_msg or "This video is not available" in error_msg:

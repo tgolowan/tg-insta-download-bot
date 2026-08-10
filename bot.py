@@ -4,9 +4,9 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from telegram import Update
+from telegram import InputMediaPhoto, Update
 from telegram.constants import ChatType
 from telegram.error import Conflict, NetworkError, TelegramError, TimedOut
 from telegram.ext import (
@@ -353,11 +353,44 @@ class SocialLinksBot:
             chat_id,
             status.message_id,
             thread_id,
-            "✅ Sending video…",
+            "✅ Sending…",
         )
 
         try:
-            for media in media_files:
+            photos = [m for m in media_files if m.get("type") == "photo"]
+            videos = [m for m in media_files if m.get("type") != "photo"]
+
+            if photos:
+                cap = ""
+                if photos[0].get("title"):
+                    cap = html.escape(str(photos[0]["title"]).strip())[:1020]
+                batch: List[InputMediaPhoto] = []
+                opened: List[Any] = []
+                for i, media in enumerate(photos[:10]):
+                    fh = open(media["file_path"], "rb")
+                    opened.append(fh)
+                    media_kw: Dict[str, Any] = {"media": fh}
+                    if i == 0 and cap:
+                        media_kw["caption"] = cap[:1024]
+                        media_kw["parse_mode"] = "HTML"
+                    batch.append(InputMediaPhoto(**media_kw))
+                try:
+                    await context.bot.send_media_group(
+                        chat_id=chat_id,
+                        media=batch,
+                        message_thread_id=thread_id,
+                    )
+                finally:
+                    for fh in opened:
+                        fh.close()
+                for media in photos[10:]:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=media["file_path"],
+                        message_thread_id=thread_id,
+                    )
+
+            for media in videos:
                 path = media["file_path"]
                 raw_cap = media.get("title") or ""
                 cap = html.escape(raw_cap.strip())[:1020] if raw_cap.strip() else ""

@@ -87,7 +87,7 @@ def test_bot_import():
 
 def test_tiktok_urls():
     print("\nTesting TikTok URL extract…")
-    from tiktok_urls import extract_tiktok_urls
+    from tiktok_urls import extract_tiktok_urls, extract_tiktok_photo_id, is_tiktok_photo_url
 
     s = (
         "See https://www.tiktok.com/@user/video/123?q=1 "
@@ -95,6 +95,9 @@ def test_tiktok_urls():
     )
     u = extract_tiktok_urls(s)
     assert len(u) >= 2
+    photo = "https://www.tiktok.com/@u/photo/7663531670280146208"
+    assert is_tiktok_photo_url(photo)
+    assert extract_tiktok_photo_id(photo) == "7663531670280146208"
     print("   OK")
 
 
