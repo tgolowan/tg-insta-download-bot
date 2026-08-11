@@ -10,7 +10,14 @@ from urllib.parse import urlparse
 import httpx
 import yt_dlp
 
-from config import DOWNLOAD_PATH, MAX_FILE_SIZE, ERROR_MESSAGES, TIKTOK_YTDLP_SOCKET_TIMEOUT
+from config import (
+    DOWNLOAD_PATH,
+    MAX_FILE_SIZE,
+    ERROR_MESSAGES,
+    TIKTOK_COMPRESS_ABOVE_BYTES,
+    TIKTOK_COMPRESS_LONGER_THAN_SEC,
+    TIKTOK_YTDLP_SOCKET_TIMEOUT,
+)
 from tiktok_urls import extract_tiktok_photo_id, is_tiktok_photo_url
 
 logging.basicConfig(level=logging.INFO)
@@ -217,6 +224,114 @@ def normalize_for_telegram(src: str) -> str:
             except OSError:
                 pass
         return src
+
+
+def compress_for_telegram_upload(src: str) -> str:
+    """Smaller 540p/480p H.264 for Telegram upload (long or large TikTok files)."""
+    base, _ = os.path.splitext(src)
+    dst = f"{base}_upload.mp4"
+    meta = probe_video_file(src)
+    duration = meta.get("duration") or 120
+    ffmpeg_timeout = max(180, min(900, int(duration * 2.5)))
+
+    attempts = (
+        (28, 540),
+        (30, 480),
+        (32, 420),
+    )
+    last_dst = src
+    for crf, max_w in attempts:
+        out = f"{base}_upload_{max_w}.mp4"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            src,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-vf",
+            f"scale='min({max_w},iw)':-2,setsar=1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "faster",
+            "-crf",
+            str(crf),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-ar",
+            "44100",
+            "-movflags",
+            "+faststart",
+            "-shortest",
+            out,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=ffmpeg_timeout,
+            )
+            if proc.returncode != 0 or not os.path.isfile(out):
+                logger.warning(
+                    "ffmpeg compress (%sp crf%s) failed: %s",
+                    max_w,
+                    crf,
+                    (proc.stderr or "")[-300:],
+                )
+                continue
+            size = os.path.getsize(out)
+            if size > MAX_FILE_SIZE:
+                os.remove(out)
+                continue
+            if last_dst not in (src, dst) and os.path.isfile(last_dst):
+                try:
+                    os.remove(last_dst)
+                except OSError:
+                    pass
+            last_dst = out
+            logger.info(
+                "Compressed TikTok upload %s -> %s bytes (%sp crf%s)",
+                os.path.getsize(src),
+                size,
+                max_w,
+                crf,
+            )
+            if size <= TIKTOK_COMPRESS_ABOVE_BYTES:
+                if out != src and os.path.isfile(src):
+                    os.remove(src)
+                return out
+        except Exception as exc:
+            logger.warning("ffmpeg compress error: %s", exc)
+
+    if last_dst != src and os.path.isfile(last_dst):
+        if os.path.isfile(src):
+            os.remove(src)
+        return last_dst
+    return src
+
+
+def prepare_for_telegram_upload(src: str) -> str:
+    size = os.path.getsize(src)
+    meta = probe_video_file(src)
+    duration = meta.get("duration") or 0
+    if size <= TIKTOK_COMPRESS_ABOVE_BYTES and duration <= TIKTOK_COMPRESS_LONGER_THAN_SEC:
+        return src
+    logger.info(
+        "Preparing upload transcode size=%s duration=%ss for %s",
+        size,
+        duration,
+        src,
+    )
+    normalized = normalize_for_telegram(src)
+    return compress_for_telegram_upload(normalized)
 
 
 class TikTokDownloader:
@@ -569,7 +684,7 @@ class TikTokDownloader:
                     info.get("height"),
                 )
 
-            downloaded_file = normalize_for_telegram(downloaded_file)
+            downloaded_file = prepare_for_telegram_upload(downloaded_file)
             file_size = os.path.getsize(downloaded_file)
             if file_size > MAX_FILE_SIZE:
                 os.remove(downloaded_file)

@@ -43,7 +43,7 @@ from link_mirror import (
     replace_instagram_hosts_checked,
 )
 from preview_check import mirror_host_chain
-from tiktok_downloader import TikTokDownloader
+from tiktok_downloader import TikTokDownloader, compress_for_telegram_upload
 from tiktok_urls import extract_tiktok_urls
 
 logging.basicConfig(
@@ -433,12 +433,29 @@ class SocialLinksBot:
                 if cap:
                     vid_kw["caption"] = cap[:1024]
                     vid_kw["parse_mode"] = "HTML"
-                try:
-                    await context.bot.send_video(**vid_kw)
-                except TelegramError as send_err:
-                    logger.warning(
-                        "send_video failed (%s); retrying as document", send_err
-                    )
+                sent = False
+                for attempt in range(2):
+                    try:
+                        await context.bot.send_video(**vid_kw)
+                        sent = True
+                        break
+                    except TelegramError as send_err:
+                        err_s = str(send_err).lower()
+                        is_slow = isinstance(send_err, TimedOut) or "504" in err_s or "gateway timeout" in err_s
+                        if attempt == 0 and is_slow and self.downloader:
+                            smaller = await asyncio.to_thread(
+                                compress_for_telegram_upload, path
+                            )
+                            if smaller != path:
+                                path = smaller
+                                vid_kw["video"] = path
+                                await asyncio.sleep(3)
+                                continue
+                        logger.warning(
+                            "send_video failed (%s); retrying as document", send_err
+                        )
+                        break
+                if not sent:
                     doc_kw = dict(
                         chat_id=chat_id,
                         document=path,
