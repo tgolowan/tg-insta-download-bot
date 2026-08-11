@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 import yt_dlp
 
-from config import DOWNLOAD_PATH, MAX_FILE_SIZE, ERROR_MESSAGES
+from config import DOWNLOAD_PATH, MAX_FILE_SIZE, ERROR_MESSAGES, TIKTOK_YTDLP_SOCKET_TIMEOUT
 from tiktok_urls import extract_tiktok_photo_id, is_tiktok_photo_url
 
 logging.basicConfig(level=logging.INFO)
@@ -111,11 +111,49 @@ def probe_has_audio(path: str) -> bool:
         return False
 
 
+def probe_video_codec(path: str) -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "csv=p=0",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            return None
+        return (proc.stdout or "").strip().lower() or None
+    except Exception as exc:
+        logger.warning("ffprobe codec check failed for %s: %s", path, exc)
+        return None
+
+
+def should_normalize_for_telegram(path: str) -> bool:
+    """h264/aac MP4 from TikTok is usually fine; skip ffmpeg to save time on Railway."""
+    codec = probe_video_codec(path)
+    if codec in ("h264", "avc1") and probe_has_audio(path):
+        return False
+    return True
+
+
 def normalize_for_telegram(src: str) -> str:
     """
     Remux to h264/aac with square pixels — mobile Telegram mis-renders some TikTok HEVC files.
     Returns path to use (original if normalize skipped or failed).
     """
+    if not should_normalize_for_telegram(src):
+        logger.info("Skipping ffmpeg normalize for %s (h264+aac)", src)
+        return src
     base, _ = os.path.splitext(src)
     dst = f"{base}_tg.mp4"
     has_audio = probe_has_audio(src)
@@ -186,6 +224,7 @@ class TikTokDownloader:
         """Initialize TikTok downloader."""
         # Create download directory
         os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+        self._resolved_urls: dict[str, str] = {}
         
         # TikTok bytevc/hevc ladders are often video-only in the MP4; h264 muxes include audio.
         self.ydl_opts = {
@@ -195,6 +234,7 @@ class TikTokDownloader:
                 'download/best[acodec!=none]/b'
             ),
             'merge_output_format': 'mp4',
+            'socket_timeout': TIKTOK_YTDLP_SOCKET_TIMEOUT,
             'postprocessors': [
                 {'key': 'FFmpegVideoRemuxer', 'preferedformat': 'mp4'},
             ],
@@ -254,17 +294,22 @@ class TikTokDownloader:
         return None
 
     def _resolve_url(self, url: str) -> str:
+        cached = self._resolved_urls.get(url)
+        if cached:
+            return cached
         try:
             with httpx.Client(
                 follow_redirects=True,
-                timeout=20.0,
+                timeout=30.0,
                 headers=_TIKTOK_HTTP_HEADERS,
             ) as client:
                 resp = client.get(url)
-            return str(resp.url)
+            resolved = str(resp.url)
         except Exception as exc:
             logger.warning("TikTok URL resolve failed for %s: %s", url, exc)
-            return url
+            resolved = url
+        self._resolved_urls[url] = resolved
+        return resolved
 
     def content_key(self, url: str) -> str:
         """Stable id for deduping vm.tiktok + full tiktok.com links to the same post."""
@@ -416,13 +461,34 @@ class TikTokDownloader:
             logger.warning("Error finding downloaded file: %s", e)
         return None
 
-    def _run_download(self, url: str, ydl_opts: dict) -> Optional[str]:
+    def _run_download(
+        self, url: str, ydl_opts: dict
+    ) -> Tuple[Optional[str], Optional[dict]]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info:
-                return None
-            return self._find_downloaded_file(info, url)
+                return None, None
+            return self._find_downloaded_file(info, url), info
     
+    def _map_ytdlp_error(self, error_msg: str) -> Optional[str]:
+        if "Unsupported URL" in error_msg and "/photo/" in error_msg:
+            return None
+        if "Private video" in error_msg or "This video is not available" in error_msg:
+            return ERROR_MESSAGES["private_account"]
+        if "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg.lower():
+            return ERROR_MESSAGES["private_account"]
+        if "Video unavailable" in error_msg or "unavailable" in error_msg.lower():
+            return "❌ Video is unavailable. It may have been deleted or is not accessible."
+        if "HTTP Error 403" in error_msg or "403" in error_msg:
+            return "❌ Access forbidden. TikTok may be blocking requests. Please try again later."
+        if "HTTP Error 429" in error_msg or "429" in error_msg or "rate limit" in error_msg.lower():
+            return ERROR_MESSAGES["rate_limited"]
+        if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+            return "❌ TikTok download timed out. Try again in a moment."
+        if "HTTP Error" in error_msg:
+            return f"❌ Connection error: {error_msg[:100]}"
+        return f"❌ Download failed: {error_msg[:150]}"
+
     def download_video(self, url: str) -> Tuple[bool, str, List[Dict]]:
         """
         Download TikTok video and return media file info.
@@ -438,148 +504,97 @@ class TikTokDownloader:
             if is_tiktok_photo_url(resolved):
                 return self._download_photo_post(url, resolved)
 
-            # First, get video info to determine aspect ratio
+            info: Optional[dict] = None
+            downloaded_file: Optional[str] = None
             try:
-                with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
+                downloaded_file, info = self._run_download(url, self.ydl_opts)
             except yt_dlp.utils.DownloadError as e:
                 error_msg = str(e)
-                logger.error(f"Info extraction error: {error_msg}")
-
+                logger.error("TikTok download error: %s", error_msg)
                 if "Unsupported URL" in error_msg and "/photo/" in error_msg:
                     resolved = self._resolve_url(url)
                     if is_tiktok_photo_url(resolved):
                         return self._download_photo_post(url, resolved)
-                
-                # Provide more specific error messages
-                if "Private video" in error_msg or "This video is not available" in error_msg:
-                    return False, ERROR_MESSAGES['private_account'], []
-                elif "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg.lower():
-                    return False, ERROR_MESSAGES['private_account'], []
-                elif "Video unavailable" in error_msg or "unavailable" in error_msg.lower():
-                    return False, "❌ Video is unavailable. It may have been deleted or is not accessible.", []
-                elif "HTTP Error 403" in error_msg or "403" in error_msg:
-                    return False, "❌ Access forbidden. TikTok may be blocking requests. Please try again later.", []
-                elif "HTTP Error 429" in error_msg or "429" in error_msg or "rate limit" in error_msg.lower():
-                    return False, ERROR_MESSAGES['rate_limited'], []
-                elif "HTTP Error" in error_msg:
-                    return False, f"❌ Connection error: {error_msg[:100]}", []
-                else:
-                    # Return more detailed error for debugging
-                    return False, f"❌ Download failed: {error_msg[:150]}", []
+                mapped = self._map_ytdlp_error(error_msg)
+                return False, mapped or f"❌ Download failed: {error_msg[:150]}", []
             except Exception as e:
                 error_msg = str(e)
-                logger.error(f"Error extracting video info: {error_msg}", exc_info=True)
-                return False, f"❌ Error: {error_msg[:150]}", []
-            
-            if not info:
-                return False, ERROR_MESSAGES['download_failed'], []
-            
-            # Check file size
-            filesize = info.get('filesize') or info.get('filesize_approx', 0)
-            if filesize and filesize > MAX_FILE_SIZE:
+                logger.error("TikTok download error: %s", error_msg, exc_info=True)
+                mapped = self._map_ytdlp_error(error_msg)
+                return False, mapped or f"❌ Error: {error_msg[:150]}", []
+
+            if downloaded_file and not probe_has_audio(downloaded_file):
+                logger.warning(
+                    "TikTok file has no audio (%s); retrying with muxed format",
+                    downloaded_file,
+                )
+                try:
+                    os.remove(downloaded_file)
+                except OSError:
+                    pass
+                retry_opts = {
+                    **self.ydl_opts,
+                    'format': (
+                        'best[vcodec^=avc][acodec!=none]/'
+                        'download/best[acodec!=none]/b'
+                    ),
+                }
+                try:
+                    downloaded_file, info = self._run_download(url, retry_opts)
+                except yt_dlp.utils.DownloadError as e:
+                    mapped = self._map_ytdlp_error(str(e))
+                    return False, mapped or f"❌ Download failed: {str(e)[:150]}", []
+
+            if not downloaded_file or not os.path.exists(downloaded_file):
+                logger.error("Downloaded file not found for %s", url)
+                return False, "❌ Downloaded file not found. The download may have failed.", []
+
+            if not probe_has_audio(downloaded_file):
+                logger.error("TikTok download still has no audio track: %s", downloaded_file)
+                os.remove(downloaded_file)
+                return False, "❌ Downloaded video has no audio. Try again later.", []
+
+            file_size = os.path.getsize(downloaded_file)
+            if file_size > MAX_FILE_SIZE:
+                os.remove(downloaded_file)
                 return False, ERROR_MESSAGES['file_too_large'], []
-            
-            # Check video dimensions to verify aspect ratio
-            # Note: We use a simple format selector since yt-dlp doesn't support
-            # height>=width comparisons. The downloaded video will match the original aspect ratio.
-            width = info.get('width', 0)
-            height = info.get('height', 0)
-            
-            logger.info(
-                "TikTok merged probe fps=%s vcodec=%s acodec=%s %sx%s",
-                info.get("fps"),
-                info.get("vcodec"),
-                info.get("acodec"),
-                info.get("width"),
-                info.get("height"),
-            )
 
-            # Download (retry without video-only ladders if mux has no audio).
-            downloaded_file = None
-            try:
-                downloaded_file = self._run_download(url, self.ydl_opts)
-                if downloaded_file and not probe_has_audio(downloaded_file):
-                    logger.warning(
-                        "TikTok file has no audio (%s); retrying with muxed format",
-                        downloaded_file,
-                    )
-                    try:
-                        os.remove(downloaded_file)
-                    except OSError:
-                        pass
-                    retry_opts = {
-                        **self.ydl_opts,
-                        'format': (
-                            'best[vcodec^=avc][acodec!=none]/'
-                            'download/best[acodec!=none]/b'
-                        ),
-                    }
-                    downloaded_file = self._run_download(url, retry_opts)
-
-                if not downloaded_file or not os.path.exists(downloaded_file):
-                    logger.error("Downloaded file not found for %s", url)
-                    return False, "❌ Downloaded file not found. The download may have failed.", []
-
-                if not probe_has_audio(downloaded_file):
-                    logger.error("TikTok download still has no audio track: %s", downloaded_file)
-                    os.remove(downloaded_file)
-                    return False, "❌ Downloaded video has no audio. Try again later.", []
-
-                file_size = os.path.getsize(downloaded_file)
-                if file_size > MAX_FILE_SIZE:
-                    os.remove(downloaded_file)
-                    return False, ERROR_MESSAGES['file_too_large'], []
-
-                downloaded_file = normalize_for_telegram(downloaded_file)
-                file_size = os.path.getsize(downloaded_file)
-                if file_size > MAX_FILE_SIZE:
-                    os.remove(downloaded_file)
-                    return False, ERROR_MESSAGES['file_too_large'], []
-
-                vmeta = probe_video_file(downloaded_file)
-                media_files = [{
-                    'type': 'video',
-                    'file_path': downloaded_file,
-                    'file_size': file_size,
-                    'mime_type': 'video/mp4',
-                    'title': info.get('title', 'TikTok Video'),
-                    'duration': vmeta.get('duration') or info.get('duration', 0),
-                    'width': vmeta.get('width') or info.get('width'),
-                    'height': vmeta.get('height') or info.get('height'),
-                }]
+            if info:
                 logger.info(
-                    "TikTok send meta width=%s height=%s duration=%s has_audio=%s",
-                    media_files[0].get("width"),
-                    media_files[0].get("height"),
-                    media_files[0].get("duration"),
-                    probe_has_audio(downloaded_file),
+                    "TikTok downloaded fps=%s vcodec=%s acodec=%s %sx%s",
+                    info.get("fps"),
+                    info.get("vcodec"),
+                    info.get("acodec"),
+                    info.get("width"),
+                    info.get("height"),
                 )
 
-                return True, "✅ Successfully downloaded TikTok video", media_files
+            downloaded_file = normalize_for_telegram(downloaded_file)
+            file_size = os.path.getsize(downloaded_file)
+            if file_size > MAX_FILE_SIZE:
+                os.remove(downloaded_file)
+                return False, ERROR_MESSAGES['file_too_large'], []
 
-            except yt_dlp.utils.DownloadError as e:
-                error_msg = str(e)
-                logger.error(f"Download error: {error_msg}")
+            vmeta = probe_video_file(downloaded_file)
+            media_files = [{
+                'type': 'video',
+                'file_path': downloaded_file,
+                'file_size': file_size,
+                'mime_type': 'video/mp4',
+                'title': (info or {}).get('title', 'TikTok Video'),
+                'duration': vmeta.get('duration') or (info or {}).get('duration', 0),
+                'width': vmeta.get('width') or (info or {}).get('width'),
+                'height': vmeta.get('height') or (info or {}).get('height'),
+            }]
+            logger.info(
+                "TikTok send meta width=%s height=%s duration=%s has_audio=%s",
+                media_files[0].get("width"),
+                media_files[0].get("height"),
+                media_files[0].get("duration"),
+                probe_has_audio(downloaded_file),
+            )
 
-                if "Private video" in error_msg or "This video is not available" in error_msg:
-                    return False, ERROR_MESSAGES['private_account'], []
-                elif "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg.lower():
-                    return False, ERROR_MESSAGES['private_account'], []
-                elif "Video unavailable" in error_msg or "unavailable" in error_msg.lower():
-                    return False, "❌ Video is unavailable. It may have been deleted or is not accessible.", []
-                elif "HTTP Error 403" in error_msg or "403" in error_msg:
-                    return False, "❌ Access forbidden. TikTok may be blocking requests. Please try again later.", []
-                elif "HTTP Error 429" in error_msg or "429" in error_msg or "rate limit" in error_msg.lower():
-                    return False, ERROR_MESSAGES['rate_limited'], []
-                elif "HTTP Error" in error_msg:
-                    return False, f"❌ Connection error: {error_msg[:100]}", []
-                else:
-                    return False, f"❌ Download failed: {error_msg[:150]}", []
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Error downloading TikTok video: {error_msg}", exc_info=True)
-                return False, f"❌ Error: {error_msg[:150]}", []
+            return True, "✅ Successfully downloaded TikTok video", media_files
                     
         except Exception as e:
             logger.error(f"Error processing TikTok URL: {e}")

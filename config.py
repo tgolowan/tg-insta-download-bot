@@ -90,6 +90,10 @@ TELEGRAM_POOL_TIMEOUT = float(os.getenv("TELEGRAM_POOL_TIMEOUT", "30"))
 TELEGRAM_GET_UPDATES_READ_TIMEOUT = float(
     os.getenv("TELEGRAM_GET_UPDATES_READ_TIMEOUT", "35")
 )
+# Uploading TikTok MP4s to Telegram — allow more than the default 30s on slow hosts.
+TELEGRAM_MEDIA_WRITE_TIMEOUT = float(os.getenv("TELEGRAM_MEDIA_WRITE_TIMEOUT", "180"))
+
+TIKTOK_YTDLP_SOCKET_TIMEOUT = float(os.getenv("TIKTOK_YTDLP_SOCKET_TIMEOUT", "60"))
 
 ENABLE_TIKTOK_DOWNLOAD = os.getenv(
     "ENABLE_TIKTOK_DOWNLOAD", "true"

@@ -30,6 +30,7 @@ from config import (
     PREVIEW_FALLBACK_UNCHECKED,
     PREVIEW_PROBE_TIMEOUT,
     RESTART_ON_STOP,
+    TELEGRAM_MEDIA_WRITE_TIMEOUT,
     TELEGRAM_CONNECT_TIMEOUT,
     TELEGRAM_GET_UPDATES_READ_TIMEOUT,
     TELEGRAM_POOL_TIMEOUT,
@@ -254,14 +255,17 @@ class SocialLinksBot:
 
         tiktok_links: List[str] = []
         if self.downloader:
+            raw_tt_links = extract_tiktok_urls(body)
             seen_tt_keys: set[str] = set()
-            for link in extract_tiktok_urls(body):
+            for link in raw_tt_links:
                 if not self.downloader.is_valid_tiktok_url(link):
                     continue
-                try:
-                    key = await asyncio.to_thread(self.downloader.content_key, link)
-                except Exception:
-                    key = link
+                key = link
+                if len(raw_tt_links) > 1:
+                    try:
+                        key = await asyncio.to_thread(self.downloader.content_key, link)
+                    except Exception:
+                        key = link
                 if key in seen_tt_keys:
                     continue
                 seen_tt_keys.add(key)
@@ -416,6 +420,8 @@ class SocialLinksBot:
                     video=path,
                     message_thread_id=thread_id,
                     supports_streaming=True,
+                    write_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
+                    read_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
                 )
                 w, h = media.get("width"), media.get("height")
                 if w and h:
@@ -438,12 +444,21 @@ class SocialLinksBot:
                         document=path,
                         filename=os.path.basename(path),
                         message_thread_id=thread_id,
+                        write_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
+                        read_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
                     )
                     if cap:
                         doc_kw["caption"] = cap[:1024]
                         doc_kw["parse_mode"] = "HTML"
                     await context.bot.send_document(**doc_kw)
                 await asyncio.sleep(0.4)
+        except TimedOut:
+            logger.exception("Sending TikTok media timed out")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Upload timed out — video may be too large or the connection was slow. Try again.",
+                message_thread_id=thread_id,
+            )
         except Exception as e:
             logger.exception("Sending TikTok video failed: %s", e)
             await context.bot.send_message(
