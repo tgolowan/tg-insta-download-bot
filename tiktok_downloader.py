@@ -266,6 +266,16 @@ class TikTokDownloader:
             logger.warning("TikTok URL resolve failed for %s: %s", url, exc)
             return url
 
+    def content_key(self, url: str) -> str:
+        """Stable id for deduping vm.tiktok + full tiktok.com links to the same post."""
+        resolved = self._resolve_url(url)
+        path = urlparse(resolved).path
+        for pattern in (r"/video/(\d+)", r"/photo/(\d+)"):
+            m = re.search(pattern, path)
+            if m:
+                return f"tiktok:{m.group(1)}"
+        return resolved.split("?", 1)[0].rstrip("/")
+
     def _photo_urls_from_embed(self, item_id: str) -> List[str]:
         embed_url = f"https://www.tiktok.com/embed/v2/{item_id}"
         try:

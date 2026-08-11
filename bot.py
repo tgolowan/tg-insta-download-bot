@@ -252,6 +252,25 @@ class SocialLinksBot:
                 )
             return
 
+        tiktok_links: List[str] = []
+        if self.downloader:
+            seen_tt_keys: set[str] = set()
+            for link in extract_tiktok_urls(body):
+                if not self.downloader.is_valid_tiktok_url(link):
+                    continue
+                try:
+                    key = await asyncio.to_thread(self.downloader.content_key, link)
+                except Exception:
+                    key = link
+                if key in seen_tt_keys:
+                    continue
+                seen_tt_keys.add(key)
+                tiktok_links.append(link)
+
+        will_handle = bool(extract_instagram_urls(body)) or bool(tiktok_links)
+        if will_handle:
+            self._remember_handled_body(message.chat_id, message.message_id, body)
+
         mirror_text, mirrored = await asyncio.to_thread(
             replace_instagram_hosts_checked,
             body,
@@ -274,7 +293,6 @@ class SocialLinksBot:
                     disable_web_page_preview=False,
                     message_thread_id=thread_id,
                 )
-                self._remember_handled_body(message.chat_id, message.message_id, body)
             except TelegramError as exc:
                 logger.error(
                     "Instagram mirror reply failed chat_id=%s msg_id=%s: %s",
@@ -289,15 +307,14 @@ class SocialLinksBot:
             )
 
         if self.downloader:
-            for link in extract_tiktok_urls(body):
-                if self.downloader.is_valid_tiktok_url(link):
-                    if LOG_LINK_ACTIVITY:
-                        logger.info(
-                            "TikTok download start chat_id=%s host=%s…",
-                            message.chat_id,
-                            link[:48],
-                        )
-                    await self._process_tiktok(context, message, link)
+            for link in tiktok_links:
+                if LOG_LINK_ACTIVITY:
+                    logger.info(
+                        "TikTok download start chat_id=%s host=%s…",
+                        message.chat_id,
+                        link[:48],
+                    )
+                await self._process_tiktok(context, message, link)
 
     async def _process_tiktok(
         self,
