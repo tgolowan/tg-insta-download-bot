@@ -89,15 +89,29 @@ def replace_instagram_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
     return _INSTAGRAM_RE.sub(repl, text), changed
 
 
-def _unchecked_fallback_host(mirror_hosts: Sequence[str]) -> str:
-    """Prefer eeinstagram.com (real video embeds), then instagram7.com."""
-    from preview_check import PREFERRED_MIRROR_HOSTS
+def _unchecked_fallback_hosts(mirror_hosts: Sequence[str]) -> List[str]:
+    """Hosts to try when probes fail — avoid broken instagram7 placeholders last."""
+    from preview_check import PHOTO_POST_MIRROR_HOSTS, PREFERRED_MIRROR_HOSTS
 
-    for preferred in PREFERRED_MIRROR_HOSTS:
-        for h in mirror_hosts:
-            if normalize_mirror_host(h) == preferred:
-                return h
-    return mirror_hosts[0]
+    order = list(PHOTO_POST_MIRROR_HOSTS) + list(PREFERRED_MIRROR_HOSTS)
+    seen: set[str] = set()
+    ranked: List[str] = []
+    for h in order:
+        n = h.strip().lower().removeprefix("www.")
+        if n and n not in seen:
+            seen.add(n)
+            ranked.append(n)
+    for h in mirror_hosts:
+        n = h.strip().lower().removeprefix("www.")
+        if n and n not in seen:
+            seen.add(n)
+            ranked.append(n)
+    return ranked
+
+
+def _unchecked_fallback_host(mirror_hosts: Sequence[str]) -> str:
+    """Prefer vx/kkclip over instagram7 when probes all fail."""
+    return _unchecked_fallback_hosts(mirror_hosts)[0]
 
 
 def replace_instagram_hosts_checked(
@@ -137,9 +151,19 @@ def replace_instagram_hosts_checked(
         picked = pick_working_mirror(u, mirror_hosts, timeout=preview_timeout)
         if not picked:
             if fallback_unchecked:
-                mirrored = instagram_url_to_mirror(u, _unchecked_fallback_host(mirror_hosts))
-                changed = True
-                return mirrored + trailing
+                for host in _unchecked_fallback_hosts(mirror_hosts):
+                    mirrored_try = instagram_url_to_mirror(u, host)
+                    if verify_preview:
+                        from preview_check import fetch_preview_score
+
+                        if fetch_preview_score(
+                            mirrored_try,
+                            timeout=min(preview_timeout, 8.0),
+                            instagram_url=u,
+                        ) <= 0:
+                            continue
+                    changed = True
+                    return mirrored_try + trailing
             return raw_full
         mirrored, _host = picked
         changed = True

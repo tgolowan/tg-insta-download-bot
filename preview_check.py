@@ -27,6 +27,8 @@ _PLACEHOLDER_MARKERS = (
     "instagram did not provide public media",
     "instagram7 fixed preview",
     "post not found",
+    "oops, preview unavailable",
+    "preview unavailable",
 )
 
 _FALLBACK_IMAGE_RE = re.compile(r"instagram7\.com/fallback/", re.IGNORECASE)
@@ -43,6 +45,14 @@ _TWITTER_PLAYER_RE = re.compile(
 def _is_instagram_origin(url: str) -> bool:
     host = urlparse(url).netloc.lower().removeprefix("www.")
     return host == "instagram.com" or host.endswith(".instagram.com")
+
+
+def _is_instagram_cdn_image(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return any(
+        part in host
+        for part in ("cdninstagram.com", "fbcdn.net", "instagram.com")
+    )
 
 
 def page_likely_has_preview(html: str) -> bool:
@@ -95,15 +105,26 @@ def _og_video_telegram_ready(
 
 
 def _og_description_is_failure(html: str) -> bool:
+    chunk = html[:80_000]
     m = re.search(
         r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']*)["\']',
-        html[:80_000],
+        chunk,
         re.IGNORECASE,
     )
-    if not m:
-        return False
-    desc = m.group(1).strip().lower()
-    return desc == "post not found" or desc.startswith("post not found")
+    if m:
+        desc = m.group(1).strip().lower()
+        if desc == "post not found" or desc.startswith("post not found"):
+            return True
+    title_m = re.search(
+        r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']*)["\']',
+        chunk,
+        re.IGNORECASE,
+    )
+    if title_m:
+        title = title_m.group(1).strip().lower()
+        if "preview unavailable" in title or title == "oops, preview unavailable":
+            return True
+    return False
 
 
 def preview_score(html: str, *, photo_post: bool = False, page_url: str = "") -> int:
@@ -153,8 +174,10 @@ def preview_score(html: str, *, photo_post: bool = False, page_url: str = "") ->
     return score
 
 
-def _fetch_preview_html(url: str, timeout: float) -> Tuple[Optional[str], Optional[str], int]:
-    """Return (html, final_url, http_status) or (None, None, 0) on failure."""
+def _fetch_preview_html(
+    url: str, timeout: float
+) -> Tuple[Optional[str], Optional[str], int, Optional[str]]:
+    """Return (body, final_url, http_status, content_type) or (None, None, 0, None)."""
     try:
         with httpx.Client(
             follow_redirects=True,
@@ -162,10 +185,10 @@ def _fetch_preview_html(url: str, timeout: float) -> Tuple[Optional[str], Option
             headers=_FETCH_HEADERS,
         ) as client:
             resp = client.get(url)
-        return resp.text, str(resp.url), resp.status_code
+        return resp.text, str(resp.url), resp.status_code, resp.headers.get("content-type")
     except Exception as exc:
         logger.warning("Preview probe failed for %s: %s", url, exc)
-        return None, None, 0
+        return None, None, 0, None
 
 
 def fetch_preview_ok(url: str, timeout: float = 8.0) -> bool:
@@ -178,8 +201,19 @@ def fetch_preview_score(
     *,
     instagram_url: Optional[str] = None,
 ) -> int:
-    html, final, status = _fetch_preview_html(url, timeout)
-    if not html or not final:
+    html, final, status, content_type = _fetch_preview_html(url, timeout)
+    if not final:
+        return 0
+    photo = is_photo_post(instagram_url or url)
+    ct = (content_type or "").lower()
+    if photo and status < 400 and "image/" in ct and _is_instagram_cdn_image(final):
+        logger.info(
+            "Preview probe OK score=9 %s -> CDN image %s",
+            url,
+            urlparse(final).netloc,
+        )
+        return 9
+    if not html:
         return 0
     if _is_instagram_origin(final):
         logger.info(
@@ -234,14 +268,20 @@ def pick_working_mirror(
 
 
 PREFERRED_MIRROR_HOSTS = ("instagram7.com", "eeinstagram.com")
+PHOTO_POST_MIRROR_HOSTS = (
+    "vxinstagram.com",
+    "kkclip.com",
+    "eeinstagram.com",
+    "instagram7.com",
+)
 
 
 def _hosts_for_instagram_url(
     instagram_url: str, mirror_hosts: Sequence[str]
 ) -> List[str]:
-    """Reels: ee first. Photo posts (/p/): instagram7 first."""
+    """Photo /p/: vx + kkclip first. Reels: instagram7 + ee."""
     preferred = (
-        ("instagram7.com", "eeinstagram.com")
+        PHOTO_POST_MIRROR_HOSTS
         if is_photo_post(instagram_url)
         else ("instagram7.com", "eeinstagram.com")
     )

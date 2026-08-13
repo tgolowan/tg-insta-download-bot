@@ -50,7 +50,7 @@ def test_preview_parse():
     assert page_likely_has_preview('<meta property="og:video" content="x">')
     assert not page_likely_has_preview("<html></html>")
     placeholder = (
-        '<meta property="og:title" content="Instagram7 fixed preview">'
+        '<meta property="og:title" content="Oops, preview unavailable">'
         '<meta property="og:image" content="https://www.instagram7.com/fallback/Ab.png">'
         "Instagram did not provide public media for this post."
     )
@@ -61,6 +61,11 @@ def test_preview_parse():
     assert chain[0] == "instagram7.com"
     assert chain[1] == "eeinstagram.com"
     assert "vxinstagram.com" in chain
+
+    post = "https://www.instagram.com/p/Db8ZQBKh2bc/"
+    picked_post = pick_working_mirror(post, chain, timeout=15)
+    assert picked_post is not None
+    assert "instagram7.com" not in picked_post[0]
 
     reel = "https://www.instagram.com/reel/DbIbyjgIlDZ/"
     picked = pick_working_mirror(reel, chain, timeout=15)
