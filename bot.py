@@ -457,36 +457,21 @@ class SocialLinksBot:
         try:
             raw_cap = media.get("title") or ""
             cap = html.escape(raw_cap.strip())[:1020] if raw_cap.strip() else ""
-            vid_kw = dict(
+            document_kw = dict(
                 chat_id=chat_id,
-                video=path,
+                document=path,
+                filename=os.path.basename(path),
                 message_thread_id=thread_id,
-                supports_streaming=True,
+                disable_content_type_detection=True,
                 write_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
                 read_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
             )
-            w, h = media.get("width"), media.get("height")
-            if w and h:
-                vid_kw["width"] = int(w)
-                vid_kw["height"] = int(h)
-            dur = media.get("duration")
-            if dur:
-                vid_kw["duration"] = int(dur)
             if cap:
-                vid_kw["caption"] = cap[:1024]
-                vid_kw["parse_mode"] = "HTML"
-            try:
-                await context.bot.send_video(**vid_kw)
-            except TelegramError as send_err:
-                logger.warning("IG reel send_video failed (%s); sending as document", send_err)
-                await context.bot.send_document(
-                    chat_id=chat_id,
-                    document=path,
-                    filename=os.path.basename(path),
-                    message_thread_id=thread_id,
-                    write_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
-                    read_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
-                )
+                document_kw["caption"] = cap[:1024]
+                document_kw["parse_mode"] = "HTML"
+            # sendDocument preserves the exact H.264/AAC bytes. Telegram's sendVideo
+            # transcoder has stripped the audio track on iOS for these mirror files.
+            await context.bot.send_document(**document_kw)
         finally:
             await asyncio.to_thread(self.ig_reels.cleanup_files, media_files)
             try:
