@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -14,7 +15,7 @@ import yt_dlp
 from config import DOWNLOAD_PATH, MAX_FILE_SIZE, TIKTOK_YTDLP_SOCKET_TIMEOUT
 from link_mirror import canonical_instagram_url
 from preview_check import is_instagram_reel, is_instagram_story
-from tiktok_downloader import prepare_for_telegram_upload, probe_video_file
+from tiktok_downloader import probe_video_file
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +55,93 @@ class InstagramReelDownloader:
         u = canonical_instagram_url(url)
         return is_instagram_reel(u) and not is_instagram_story(u)
 
+    @staticmethod
+    def _normalize_for_mobile(path: str) -> Optional[str]:
+        """Encode a streaming-safe H.264 Main/AAC-LC MP4 for Telegram mobile."""
+        base, _ = os.path.splitext(path)
+        output = f"{base}_mobile.mp4"
+        meta = probe_video_file(path)
+        duration = float(meta.get("duration") or 60)
+        timeout = max(120, min(900, int(duration * 4)))
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            path,
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-vf",
+            "scale='min(720,iw)':-2,setsar=1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-profile:v",
+            "main",
+            "-level:v",
+            "3.1",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-profile:a",
+            "aac_low",
+            "-b:a",
+            "128k",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-movflags",
+            "+faststart",
+            "-fflags",
+            "+genpts",
+            "-avoid_negative_ts",
+            "make_zero",
+            "-shortest",
+            output,
+        ]
+        try:
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if (
+                proc.returncode != 0
+                or not os.path.isfile(output)
+                or os.path.getsize(output) < 1024
+            ):
+                logger.warning(
+                    "Instagram mobile normalization failed: %s",
+                    (proc.stderr or "")[-500:],
+                )
+                if os.path.isfile(output):
+                    os.remove(output)
+                return None
+            os.remove(path)
+            return output
+        except Exception as exc:
+            logger.warning("Instagram mobile normalization error: %s", exc)
+            if os.path.isfile(output):
+                try:
+                    os.remove(output)
+                except OSError:
+                    pass
+            return None
+
     def _pack_video_file(self, path: str, title: str = "") -> Tuple[bool, str, List[Dict]]:
-        path = prepare_for_telegram_upload(path)
+        normalized = self._normalize_for_mobile(path)
+        if not normalized:
+            if os.path.isfile(path):
+                os.remove(path)
+            return False, "❌ Could not prepare reel for Telegram mobile.", []
+        path = normalized
         size = os.path.getsize(path)
         if size > MAX_FILE_SIZE:
             os.remove(path)
