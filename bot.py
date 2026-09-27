@@ -241,6 +241,11 @@ class SocialLinksBot:
             return
 
         if not self._chat_is_allowed(message.chat):
+            if LOG_LINK_ACTIVITY:
+                logger.info(
+                    "Ignored link chat_id=%s (not in ALLOWED_CHAT_IDS)",
+                    message.chat_id,
+                )
             return
 
         is_edit = update.edited_message is not None
@@ -272,8 +277,6 @@ class SocialLinksBot:
                 tiktok_links.append(link)
 
         will_handle = bool(extract_instagram_urls(body)) or bool(tiktok_links)
-        if will_handle:
-            self._remember_handled_body(message.chat_id, message.message_id, body)
 
         mirror_text, mirrored = await asyncio.to_thread(
             replace_instagram_hosts_checked,
@@ -284,6 +287,7 @@ class SocialLinksBot:
             fallback_unchecked=self._preview_fallback_unchecked,
         )
         thread_id = getattr(message, "message_thread_id", None)
+        replied = False
         if mirrored:
             if LOG_LINK_ACTIVITY:
                 logger.info(
@@ -297,6 +301,7 @@ class SocialLinksBot:
                     disable_web_page_preview=False,
                     message_thread_id=thread_id,
                 )
+                replied = True
             except TelegramError as exc:
                 logger.error(
                     "Instagram mirror reply failed chat_id=%s msg_id=%s: %s",
@@ -309,6 +314,15 @@ class SocialLinksBot:
                 "Instagram link(s) in chat_id=%s: could not mirror",
                 message.chat_id,
             )
+            try:
+                await message.reply_text(
+                    "⚠️ Could not mirror this Instagram link (no preview mirror responded). "
+                    "Try again in a minute or paste a direct reel/post URL.",
+                    message_thread_id=thread_id,
+                )
+                replied = True
+            except TelegramError as exc:
+                logger.error("Mirror failure notice not sent: %s", exc)
 
         if self.downloader:
             for link in tiktok_links:
@@ -319,6 +333,10 @@ class SocialLinksBot:
                         link[:48],
                     )
                 await self._process_tiktok(context, message, link)
+                replied = True
+
+        if replied or will_handle:
+            self._remember_handled_body(message.chat_id, message.message_id, body)
 
     async def _process_tiktok(
         self,

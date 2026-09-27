@@ -164,6 +164,10 @@ def replace_instagram_hosts_checked(
                             continue
                     changed = True
                     return mirrored_try + trailing
+                # Probes failed (slow network / mirrors down) — still mirror so user gets a reply.
+                host = _unchecked_fallback_host(mirror_hosts)
+                changed = True
+                return instagram_url_to_mirror(u, host) + trailing
             return raw_full
         mirrored, _host = picked
         changed = True
