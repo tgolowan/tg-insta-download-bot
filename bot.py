@@ -457,21 +457,35 @@ class SocialLinksBot:
         try:
             raw_cap = media.get("title") or ""
             cap = html.escape(raw_cap.strip())[:1020] if raw_cap.strip() else ""
-            document_kw = dict(
+            video_kw = dict(
                 chat_id=chat_id,
-                document=path,
                 filename=os.path.basename(path),
                 message_thread_id=thread_id,
-                disable_content_type_detection=True,
+                supports_streaming=True,
                 write_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
                 read_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
             )
+            w, h = media.get("width"), media.get("height")
+            if w and h:
+                video_kw["width"] = int(w)
+                video_kw["height"] = int(h)
+            dur = media.get("duration")
+            if dur:
+                video_kw["duration"] = int(dur)
             if cap:
-                document_kw["caption"] = cap[:1024]
-                document_kw["parse_mode"] = "HTML"
-            # sendDocument preserves the exact H.264/AAC bytes. Telegram's sendVideo
-            # transcoder has stripped the audio track on iOS for these mirror files.
-            await context.bot.send_document(**document_kw)
+                video_kw["caption"] = cap[:1024]
+                video_kw["parse_mode"] = "HTML"
+            # Upload a real multipart file, not a URL/path hint. Audio presence was
+            # verified before this point and normalization requires an audio stream.
+            with open(path, "rb") as video_file:
+                video_kw["video"] = video_file
+                sent = await context.bot.send_video(**video_kw)
+            logger.info(
+                "Instagram reel sent file_id=%s size=%s duration=%s",
+                getattr(getattr(sent, "video", None), "file_id", None),
+                getattr(getattr(sent, "video", None), "file_size", None),
+                getattr(getattr(sent, "video", None), "duration", None),
+            )
         finally:
             await asyncio.to_thread(self.ig_reels.cleanup_files, media_files)
             try:

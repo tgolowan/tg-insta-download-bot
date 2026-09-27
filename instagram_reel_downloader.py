@@ -15,7 +15,7 @@ import yt_dlp
 from config import DOWNLOAD_PATH, MAX_FILE_SIZE, TIKTOK_YTDLP_SOCKET_TIMEOUT
 from link_mirror import canonical_instagram_url
 from preview_check import is_instagram_reel, is_instagram_story
-from tiktok_downloader import probe_video_file
+from tiktok_downloader import probe_has_audio, probe_video_file
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class InstagramReelDownloader:
             "-map",
             "0:v:0",
             "-map",
-            "0:a:0?",
+            "0:a:0",
             "-vf",
             "scale='min(720,iw)':-2,setsar=1",
             "-c:v",
@@ -116,6 +116,7 @@ class InstagramReelDownloader:
                 proc.returncode != 0
                 or not os.path.isfile(output)
                 or os.path.getsize(output) < 1024
+                or not probe_has_audio(output)
             ):
                 logger.warning(
                     "Instagram mobile normalization failed: %s",
@@ -136,6 +137,11 @@ class InstagramReelDownloader:
             return None
 
     def _pack_video_file(self, path: str, title: str = "") -> Tuple[bool, str, List[Dict]]:
+        if not probe_has_audio(path):
+            logger.error("Instagram source has no audio track: %s", path)
+            if os.path.isfile(path):
+                os.remove(path)
+            return False, "❌ Instagram returned a video without audio.", []
         normalized = self._normalize_for_mobile(path)
         if not normalized:
             if os.path.isfile(path):
