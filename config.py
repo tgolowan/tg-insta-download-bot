@@ -47,6 +47,8 @@ MIRROR_HOST = os.getenv("MIRROR_HOST", "instagram7.com")
 
 def _parse_mirror_fallbacks(raw: Optional[str]) -> tuple:
     default = (
+        "hhinstagram.com",
+        "zzinstagram.com",
         "instagram7.com",
         "vxinstagram.com",
     )
@@ -62,6 +64,9 @@ def _parse_mirror_fallbacks(raw: Optional[str]) -> tuple:
 MIRROR_FALLBACK_HOSTS = _parse_mirror_fallbacks(os.getenv("MIRROR_FALLBACK_HOSTS"))
 
 PREVIEW_PROBE_TIMEOUT = float(os.getenv("PREVIEW_PROBE_TIMEOUT", "8"))
+
+# Max seconds for Instagram mirror probing per message; then mirror without probes.
+IG_MIRROR_BUDGET_SECONDS = float(os.getenv("IG_MIRROR_BUDGET_SECONDS", "22"))
 
 CHECK_LINK_PREVIEW = os.getenv("CHECK_LINK_PREVIEW", "true").lower() in (
     "1",

@@ -8,10 +8,48 @@ from urllib.parse import urlparse, urlunparse
 
 _TRAILING = frozenset(".,);:!?\"]'\u00bb")
 
+# [\w.-]*instagram.com matches www.instagram.com and www.zzinstagram.com (InstaFix mirrors).
+_INSTAGRAM_PATH = r"(?:/[^\s\]\}\)<>\"']*)?"
+_INSTAGRAM_HOST = r"[\w.-]*instagram\.com"
 _INSTAGRAM_RE = re.compile(
-    r"(?:https?://)?(?:[\w-]+\.)*instagram\.com(?:/[^\s\]\}\)<>\"']*)?",
+    rf"(?:https?://{_INSTAGRAM_HOST}{_INSTAGRAM_PATH}|"
+    rf"(?<![\w./]){_INSTAGRAM_HOST}{_INSTAGRAM_PATH})",
     re.IGNORECASE,
 )
+
+
+def is_canonical_instagram_host(netloc: str) -> bool:
+    n = netloc.lower().removeprefix("www.")
+    return n in ("instagram.com", "m.instagram.com")
+
+
+def is_mirror_instagram_host(netloc: str) -> bool:
+    n = netloc.lower().removeprefix("www.")
+    if is_canonical_instagram_host(netloc):
+        return False
+    return n.endswith("instagram.com")
+
+
+def canonical_instagram_url(url: str) -> str:
+    """Normalize instagram.com or *instagram.com mirror links to www.instagram.com."""
+    parsed = urlparse(_ensure_instagram_scheme(url))
+    n = parsed.netloc.lower().removeprefix("www.")
+    if not n.endswith("instagram.com"):
+        return url
+    if is_mirror_instagram_host(parsed.netloc) or is_canonical_instagram_host(
+        parsed.netloc
+    ):
+        path = parsed.path or "/"
+        return urlunparse(("https", "www.instagram.com", path, "", "", ""))
+    return url
+
+
+def is_instagram_link(url: str) -> bool:
+    parsed = urlparse(_ensure_instagram_scheme(url))
+    n = parsed.netloc.lower().removeprefix("www.")
+    return is_canonical_instagram_host(parsed.netloc) or is_mirror_instagram_host(
+        parsed.netloc
+    )
 
 
 def _ensure_instagram_scheme(url: str) -> str:
@@ -27,11 +65,8 @@ def normalize_mirror_host(raw: str) -> str:
 
 
 def instagram_url_to_mirror(url: str, mirror_host: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        parsed = urlparse("https://" + url)
-    netloc = parsed.netloc.lower().removeprefix("www.")
-    if not netloc.endswith("instagram.com"):
+    parsed = urlparse(_ensure_instagram_scheme(url))
+    if not is_instagram_link(url):
         return url
     base = normalize_mirror_host(mirror_host)
     new_netloc = f"www.{base}"
@@ -54,9 +89,8 @@ def extract_instagram_urls(text: str) -> List[str]:
     for m in _INSTAGRAM_RE.finditer(text):
         u, _ = _strip_trailing_noise(m.group(0))
         u = _ensure_instagram_scheme(u)
-        nl = urlparse(u).netloc.lower().removeprefix("www.")
-        if nl.endswith("instagram.com"):
-            found.append(u)
+        if is_instagram_link(u):
+            found.append(canonical_instagram_url(u))
     return found
 
 
@@ -79,9 +113,8 @@ def replace_instagram_hosts(text: str, mirror_host: str) -> Tuple[str, bool]:
         nonlocal changed
         raw_full = match.group(0)
         u, trailing = _strip_trailing_noise(raw_full)
-        u = _ensure_instagram_scheme(u)
-        nl = urlparse(u).netloc.lower().removeprefix("www.")
-        if not u or not nl.endswith("instagram.com"):
+        u = canonical_instagram_url(_ensure_instagram_scheme(u))
+        if not u or not is_instagram_link(u):
             return raw_full
         changed = True
         return instagram_url_to_mirror(u, mirror_host) + trailing
@@ -114,6 +147,53 @@ def _unchecked_fallback_host(mirror_hosts: Sequence[str]) -> str:
     return _unchecked_fallback_hosts(mirror_hosts)[0]
 
 
+def mirror_host_for_instagram_url(
+    instagram_url: str, mirror_hosts: Sequence[str]
+) -> str:
+    """Pick a mirror host for posts, reels, or stories (no HTTP probe)."""
+    from preview_check import (
+        PHOTO_POST_MIRROR_HOSTS,
+        REEL_MIRROR_HOSTS,
+        STORY_MIRROR_HOSTS,
+        is_instagram_reel,
+        is_instagram_story,
+        is_photo_post,
+    )
+
+    if is_instagram_story(instagram_url):
+        return STORY_MIRROR_HOSTS[0]
+    if is_photo_post(instagram_url):
+        ranked = _unchecked_fallback_hosts(mirror_hosts)
+        for h in PHOTO_POST_MIRROR_HOSTS:
+            n = h.strip().lower().removeprefix("www.")
+            if n in ranked:
+                return n
+        return ranked[0]
+    if is_instagram_reel(instagram_url):
+        return REEL_MIRROR_HOSTS[0]
+    return _unchecked_fallback_hosts(mirror_hosts)[0]
+
+
+def fast_mirror_instagram_text(
+    text: str, mirror_hosts: Sequence[str]
+) -> Tuple[str, bool]:
+    """Rewrite instagram.com URLs without HTTP probes (Railway timeout fallback)."""
+    changed = False
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal changed
+        raw_full = match.group(0)
+        u, trailing = _strip_trailing_noise(raw_full)
+        u = canonical_instagram_url(_ensure_instagram_scheme(u))
+        if not u or not is_instagram_link(u):
+            return raw_full
+        changed = True
+        host = mirror_host_for_instagram_url(u, mirror_hosts)
+        return instagram_url_to_mirror(u, host) + trailing
+
+    return _INSTAGRAM_RE.sub(repl, text), changed
+
+
 def replace_instagram_hosts_checked(
     text: str,
     mirror_hosts: Sequence[str],
@@ -136,36 +216,33 @@ def replace_instagram_hosts_checked(
         nonlocal changed
         raw_full = match.group(0)
         u, trailing = _strip_trailing_noise(raw_full)
-        u = _ensure_instagram_scheme(u)
-        nl = urlparse(u).netloc.lower().removeprefix("www.")
-        if not u or not nl.endswith("instagram.com"):
+        u = canonical_instagram_url(_ensure_instagram_scheme(u))
+        if not u or not is_instagram_link(u):
             return raw_full
 
-        if not verify_preview:
-            out = instagram_url_to_mirror(u, mirror_hosts[0]) + trailing
-            changed = True
-            return out
+        from preview_check import is_instagram_story, pick_working_mirror
 
-        from preview_check import pick_working_mirror
+        if not verify_preview:
+            host = (
+                mirror_host_for_instagram_url(u, mirror_hosts)
+                if is_instagram_story(u)
+                else mirror_hosts[0]
+            )
+            changed = True
+            return instagram_url_to_mirror(u, host) + trailing
+
+        if is_instagram_story(u):
+            if fallback_unchecked:
+                host = mirror_host_for_instagram_url(u, mirror_hosts)
+                changed = True
+                return instagram_url_to_mirror(u, host) + trailing
+            return raw_full
 
         picked = pick_working_mirror(u, mirror_hosts, timeout=preview_timeout)
         if not picked:
             if fallback_unchecked:
-                for host in _unchecked_fallback_hosts(mirror_hosts):
-                    mirrored_try = instagram_url_to_mirror(u, host)
-                    if verify_preview:
-                        from preview_check import fetch_preview_score
-
-                        if fetch_preview_score(
-                            mirrored_try,
-                            timeout=min(preview_timeout, 8.0),
-                            instagram_url=u,
-                        ) <= 0:
-                            continue
-                    changed = True
-                    return mirrored_try + trailing
-                # Probes failed (slow network / mirrors down) — still mirror so user gets a reply.
-                host = _unchecked_fallback_host(mirror_hosts)
+                # pick_working_mirror already probed hosts — avoid a second slow pass on Railway.
+                host = mirror_host_for_instagram_url(u, mirror_hosts)
                 changed = True
                 return instagram_url_to_mirror(u, host) + trailing
             return raw_full

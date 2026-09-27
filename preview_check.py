@@ -79,6 +79,32 @@ def is_photo_post(instagram_url: str) -> bool:
     return "/p/" in path
 
 
+def is_instagram_reel(instagram_url: str) -> bool:
+    path = urlparse(instagram_url).path.lower()
+    return "/reel/" in path or "/reels/" in path
+
+
+def is_instagram_story(instagram_url: str) -> bool:
+    path = urlparse(instagram_url).path.lower()
+    return "/stories/" in path
+
+
+STORY_MIRROR_HOSTS = (
+    "eeinstagram.com",
+    "vxinstagram.com",
+    "instagram7.com",
+)
+
+# InstaFix (zz → hh): reliable og:video for reels; ee/vx often fail on newer reels.
+REEL_MIRROR_HOSTS = (
+    "hhinstagram.com",
+    "zzinstagram.com",
+    "instagram7.com",
+    "eeinstagram.com",
+    "vxinstagram.com",
+)
+
+
 def _normalize_og_url(raw: str, page_url: str) -> str:
     u = raw.strip().replace("&amp;", "&")
     if u.startswith("//"):
@@ -204,7 +230,10 @@ def fetch_preview_score(
     html, final, status, content_type = _fetch_preview_html(url, timeout)
     if not final:
         return 0
-    photo = is_photo_post(instagram_url or url)
+    origin = instagram_url or url
+    if is_instagram_story(origin) and "/stories/" not in urlparse(final).path.lower():
+        return 0
+    photo = is_photo_post(origin) or is_instagram_story(origin)
     ct = (content_type or "").lower()
     if photo and status < 400 and "image/" in ct and _is_instagram_cdn_image(final):
         logger.info(
@@ -267,7 +296,12 @@ def pick_working_mirror(
     return best if best_score > 0 else None
 
 
-PREFERRED_MIRROR_HOSTS = ("instagram7.com", "eeinstagram.com")
+PREFERRED_MIRROR_HOSTS = (
+    "hhinstagram.com",
+    "zzinstagram.com",
+    "instagram7.com",
+    "eeinstagram.com",
+)
 PHOTO_POST_MIRROR_HOSTS = (
     "vxinstagram.com",
     "kkclip.com",
@@ -279,12 +313,13 @@ PHOTO_POST_MIRROR_HOSTS = (
 def _hosts_for_instagram_url(
     instagram_url: str, mirror_hosts: Sequence[str]
 ) -> List[str]:
-    """Photo /p/: vx + kkclip first. Reels: instagram7 + ee."""
-    preferred = (
-        PHOTO_POST_MIRROR_HOSTS
-        if is_photo_post(instagram_url)
-        else ("instagram7.com", "eeinstagram.com")
-    )
+    """Stories: ee first. Photo /p/: vx + kkclip. Reels: instagram7 + ee."""
+    if is_instagram_story(instagram_url):
+        preferred = STORY_MIRROR_HOSTS
+    elif is_photo_post(instagram_url):
+        preferred = PHOTO_POST_MIRROR_HOSTS
+    else:
+        preferred = REEL_MIRROR_HOSTS
     normalized = []
     for h in mirror_hosts:
         n = h.strip().lower().removeprefix("www.")
@@ -292,7 +327,7 @@ def _hosts_for_instagram_url(
             normalized.append(n)
     ranked: List[str] = []
     for p in preferred:
-        if p in normalized and p not in ranked:
+        if p not in ranked:
             ranked.append(p)
     for n in normalized:
         if n not in ranked:

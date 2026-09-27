@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from telegram import InputMediaPhoto, Update
+from telegram import InputMediaPhoto, MessageEntity, Update
 from telegram.constants import ChatType
 from telegram.error import Conflict, NetworkError, TelegramError, TimedOut
 from telegram.ext import (
@@ -27,6 +27,7 @@ from config import (
     LOG_LINK_ACTIVITY,
     MIRROR_FALLBACK_HOSTS,
     MIRROR_HOST,
+    IG_MIRROR_BUDGET_SECONDS,
     PREVIEW_FALLBACK_UNCHECKED,
     PREVIEW_PROBE_TIMEOUT,
     RESTART_ON_STOP,
@@ -40,9 +41,10 @@ from config import (
 from link_mirror import (
     collect_message_link_text,
     extract_instagram_urls,
+    fast_mirror_instagram_text,
     replace_instagram_hosts_checked,
 )
-from preview_check import mirror_host_chain
+from preview_check import is_instagram_story, mirror_host_chain
 from tiktok_downloader import TikTokDownloader, compress_for_telegram_upload
 from tiktok_urls import extract_tiktok_urls
 
@@ -70,8 +72,8 @@ class EditedPlainTextHandler(BaseHandler):
         msg = update.edited_message
         if not msg:
             return False
-        body = (msg.text or msg.caption or "").strip()
-        return bool(body) and not body.startswith("/")
+        body = collect_message_link_text(msg)
+        return bool(body) and not body.lstrip().startswith("/")
 
 
 class SocialLinksBot:
@@ -114,7 +116,12 @@ class SocialLinksBot:
         async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await self._handle_incoming(update, context)
 
-        msg_filter = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND
+        msg_filter = (
+            filters.TEXT
+            | filters.CAPTION
+            | filters.Entity(MessageEntity.URL)
+            | filters.Entity(MessageEntity.TEXT_LINK)
+        ) & ~filters.COMMAND
         self.application.add_handler(MessageHandler(msg_filter, handle_text))
         self.application.add_handler(EditedPlainTextHandler(handle_text))
 
@@ -136,6 +143,31 @@ class SocialLinksBot:
 
     def _already_handled(self, chat_id: int, message_id: int, body: str) -> bool:
         return self._handled_bodies.get((chat_id, message_id)) == body
+
+    async def _mirror_instagram_body(self, body: str) -> tuple[str, bool]:
+        """Probe mirrors with a time budget; fall back to vx/kkclip rewrite without probes."""
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    replace_instagram_hosts_checked,
+                    body,
+                    self._mirror_hosts,
+                    verify_preview=self._check_preview,
+                    preview_timeout=self._preview_timeout,
+                    fallback_unchecked=self._preview_fallback_unchecked,
+                ),
+                timeout=IG_MIRROR_BUDGET_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Instagram mirror probes exceeded %.0fs budget — using fast mirror",
+                IG_MIRROR_BUDGET_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning("Instagram mirror probes failed: %s — using fast mirror", exc)
+        return await asyncio.to_thread(
+            fast_mirror_instagram_text, body, self._mirror_hosts
+        )
 
     async def cmd_chatid(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Always works — use this to read a group's id before adding it to ALLOWED_CHAT_IDS."""
@@ -276,16 +308,20 @@ class SocialLinksBot:
                 seen_tt_keys.add(key)
                 tiktok_links.append(link)
 
-        will_handle = bool(extract_instagram_urls(body)) or bool(tiktok_links)
+        ig_urls = extract_instagram_urls(body)
+        has_story_link = any(is_instagram_story(u) for u in ig_urls)
+        will_handle = bool(ig_urls) or bool(tiktok_links)
 
-        mirror_text, mirrored = await asyncio.to_thread(
-            replace_instagram_hosts_checked,
-            body,
-            self._mirror_hosts,
-            verify_preview=self._check_preview,
-            preview_timeout=self._preview_timeout,
-            fallback_unchecked=self._preview_fallback_unchecked,
-        )
+        if has_story_link:
+            mirror_text, mirrored = await asyncio.to_thread(
+                fast_mirror_instagram_text, body, self._mirror_hosts
+            )
+        else:
+            mirror_text, mirrored = await self._mirror_instagram_body(body)
+            if ig_urls and not mirrored:
+                mirror_text, mirrored = await asyncio.to_thread(
+                    fast_mirror_instagram_text, body, self._mirror_hosts
+                )
         thread_id = getattr(message, "message_thread_id", None)
         replied = False
         if mirrored:
@@ -296,8 +332,15 @@ class SocialLinksBot:
                     thread_id,
                 )
             try:
+                reply_text = mirror_text
+                if has_story_link:
+                    reply_text += (
+                        "\n\nℹ️ Instagram Stories usually can't show a preview in Telegram "
+                        "(they expire after ~24h). Open the mirrored link in the Instagram app "
+                        "if the preview is empty."
+                    )
                 await message.reply_text(
-                    mirror_text,
+                    reply_text,
                     disable_web_page_preview=False,
                     message_thread_id=thread_id,
                 )
@@ -309,15 +352,20 @@ class SocialLinksBot:
                     message.message_id,
                     exc,
                 )
-        elif extract_instagram_urls(body):
+        elif ig_urls:
             logger.warning(
                 "Instagram link(s) in chat_id=%s: could not mirror",
                 message.chat_id,
             )
             try:
+                hint = (
+                    "Story share links often don't work with preview mirrors — open them in the Instagram app."
+                    if has_story_link
+                    else "Try again in a minute or paste a direct reel/post URL."
+                )
                 await message.reply_text(
                     "⚠️ Could not mirror this Instagram link (no preview mirror responded). "
-                    "Try again in a minute or paste a direct reel/post URL.",
+                    f"{hint}",
                     message_thread_id=thread_id,
                 )
                 replied = True

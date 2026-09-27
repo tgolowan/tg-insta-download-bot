@@ -24,7 +24,22 @@ def test_link_mirror():
     assert mirrored == "https://www.kkclip.com/reel/DS0Q8cfDLDA/"
     assert "igsh" not in mirrored
 
-    from link_mirror import extract_instagram_urls, replace_instagram_hosts_checked
+    from link_mirror import (
+        canonical_instagram_url,
+        extract_instagram_urls,
+        replace_instagram_hosts_checked,
+    )
+
+    zz = "https://www.zzinstagram.com/reel/Ddv5Oe9ugYg/"
+    assert extract_instagram_urls(zz) == [canonical_instagram_url(zz)]
+    out_zz, changed_zz = replace_instagram_hosts_checked(
+        zz,
+        ("hhinstagram.com", "vxinstagram.com"),
+        verify_preview=False,
+    )
+    assert changed_zz
+    assert out_zz == "https://www.hhinstagram.com/reel/Ddv5Oe9ugYg/"
+    assert "zzhttps" not in out_zz
 
     hyphen = "https://www.instagram.com/reel/Da-HxxeN_mz/?igsh=MTI2bm81am43Nzd6Zw=="
     assert extract_instagram_urls(hyphen)
@@ -58,8 +73,8 @@ def test_preview_parse():
     assert not page_likely_has_preview(placeholder)
 
     chain = mirror_host_chain("vxinstagram.com", ("kkclip.com", "vxinstagram.com"))
-    assert chain[0] == "instagram7.com"
-    assert chain[1] == "eeinstagram.com"
+    assert chain[0] == "hhinstagram.com"
+    assert "instagram7.com" in chain
     assert "vxinstagram.com" in chain
 
     post = "https://www.instagram.com/p/Db8ZQBKh2bc/"
@@ -70,7 +85,12 @@ def test_preview_parse():
     reel = "https://www.instagram.com/reel/DbIbyjgIlDZ/"
     picked = pick_working_mirror(reel, chain, timeout=15)
     assert picked is not None
-    assert picked[1] in ("eeinstagram.com", "instagram7.com"), picked
+    assert picked[1] in (
+        "hhinstagram.com",
+        "zzinstagram.com",
+        "eeinstagram.com",
+        "instagram7.com",
+    ), picked
     print("   OK")
 
 
