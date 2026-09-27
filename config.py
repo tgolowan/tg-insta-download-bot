@@ -108,6 +108,11 @@ ENABLE_TIKTOK_DOWNLOAD = os.getenv(
     "ENABLE_TIKTOK_DOWNLOAD", "true"
 ).lower() in ("1", "true", "yes")
 
+# Reels: send MP4 in chat (Telegram often won't unfurl hhinstagram link previews).
+ENABLE_INSTAGRAM_REEL_DOWNLOAD = os.getenv(
+    "ENABLE_INSTAGRAM_REEL_DOWNLOAD", "true"
+).lower() in ("1", "true", "yes")
+
 DOWNLOAD_PATH = os.getenv("DOWNLOAD_PATH", "./downloads")
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE_MB", "50")) * 1024 * 1024
 

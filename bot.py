@@ -23,6 +23,7 @@ from config import (
     ALLOW_PRIVATE_CHAT,
     BOT_TOKEN,
     CHECK_LINK_PREVIEW,
+    ENABLE_INSTAGRAM_REEL_DOWNLOAD,
     ENABLE_TIKTOK_DOWNLOAD,
     LOG_LINK_ACTIVITY,
     MIRROR_FALLBACK_HOSTS,
@@ -44,7 +45,8 @@ from link_mirror import (
     fast_mirror_instagram_text,
     replace_instagram_hosts_checked,
 )
-from preview_check import is_instagram_story, mirror_host_chain
+from instagram_reel_downloader import InstagramReelDownloader
+from preview_check import is_instagram_reel, is_instagram_story, mirror_host_chain
 from tiktok_downloader import TikTokDownloader, compress_for_telegram_upload
 from tiktok_urls import extract_tiktok_urls
 
@@ -93,6 +95,9 @@ class SocialLinksBot:
         self._handled_bodies: dict[tuple[int, int], str] = {}
         self._handled_bodies_max = 4000
         self.downloader = TikTokDownloader() if ENABLE_TIKTOK_DOWNLOAD else None
+        self.ig_reels = (
+            InstagramReelDownloader() if ENABLE_INSTAGRAM_REEL_DOWNLOAD else None
+        )
         self._build_application()
 
     def _build_application(self) -> None:
@@ -310,20 +315,44 @@ class SocialLinksBot:
 
         ig_urls = extract_instagram_urls(body)
         has_story_link = any(is_instagram_story(u) for u in ig_urls)
+        reel_urls = [
+            u
+            for u in ig_urls
+            if is_instagram_reel(u) and not is_instagram_story(u)
+        ]
+        mirror_ig_urls = bool(ig_urls) and (
+            bool([u for u in ig_urls if u not in reel_urls])
+            or (bool(reel_urls) and not self.ig_reels)
+        )
         will_handle = bool(ig_urls) or bool(tiktok_links)
 
-        if has_story_link:
-            mirror_text, mirrored = await asyncio.to_thread(
-                fast_mirror_instagram_text, body, self._mirror_hosts
-            )
-        else:
-            mirror_text, mirrored = await self._mirror_instagram_body(body)
-            if ig_urls and not mirrored:
+        thread_id = getattr(message, "message_thread_id", None)
+        replied = False
+
+        if self.ig_reels and reel_urls:
+            for link in reel_urls:
+                if LOG_LINK_ACTIVITY:
+                    logger.info(
+                        "Instagram reel download start chat_id=%s %s…",
+                        message.chat_id,
+                        link[:48],
+                    )
+                await self._process_instagram_reel(context, message, link, body)
+            replied = True
+
+        mirror_text, mirrored = "", False
+        if mirror_ig_urls:
+            if has_story_link:
                 mirror_text, mirrored = await asyncio.to_thread(
                     fast_mirror_instagram_text, body, self._mirror_hosts
                 )
-        thread_id = getattr(message, "message_thread_id", None)
-        replied = False
+            else:
+                mirror_text, mirrored = await self._mirror_instagram_body(body)
+                if ig_urls and not mirrored:
+                    mirror_text, mirrored = await asyncio.to_thread(
+                        fast_mirror_instagram_text, body, self._mirror_hosts
+                    )
+
         if mirrored:
             if LOG_LINK_ACTIVITY:
                 logger.info(
@@ -352,7 +381,7 @@ class SocialLinksBot:
                     message.message_id,
                     exc,
                 )
-        elif ig_urls:
+        elif mirror_ig_urls and ig_urls:
             logger.warning(
                 "Instagram link(s) in chat_id=%s: could not mirror",
                 message.chat_id,
@@ -385,6 +414,89 @@ class SocialLinksBot:
 
         if replied or will_handle:
             self._remember_handled_body(message.chat_id, message.message_id, body)
+
+    async def _process_instagram_reel(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        message,
+        link: str,
+        body: str,
+    ) -> None:
+        chat_id = message.chat_id
+        thread_id = getattr(message, "message_thread_id", None)
+        status = await message.reply_text(
+            f"⏳ Downloading Instagram reel…\n<code>{html.escape(link)}</code>",
+            parse_mode="HTML",
+            message_thread_id=thread_id,
+        )
+        try:
+            ok, detail, media_files = await asyncio.to_thread(
+                self.ig_reels.download_reel, link
+            )
+        except Exception as exc:
+            logger.exception("Instagram reel download crashed: %s", exc)
+            ok, detail, media_files = False, "❌ Reel download failed unexpectedly.", []
+
+        if not ok or not media_files:
+            mirror_text, mirrored = await asyncio.to_thread(
+                fast_mirror_instagram_text, body, self._mirror_hosts
+            )
+            note = str(detail)
+            if mirrored:
+                note = f"{mirror_text}\n\n⚠️ Reel download failed — mirror link only (preview may not show):\n{detail}"
+            await self._safe_edit_message(
+                context, chat_id, status.message_id, thread_id, note[:3900]
+            )
+            return
+
+        await self._safe_edit_message(
+            context, chat_id, status.message_id, thread_id, "✅ Sending reel…"
+        )
+        media = media_files[0]
+        path = media["file_path"]
+        try:
+            raw_cap = media.get("title") or ""
+            cap = html.escape(raw_cap.strip())[:1020] if raw_cap.strip() else ""
+            vid_kw = dict(
+                chat_id=chat_id,
+                video=path,
+                message_thread_id=thread_id,
+                supports_streaming=True,
+                write_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
+                read_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
+            )
+            w, h = media.get("width"), media.get("height")
+            if w and h:
+                vid_kw["width"] = int(w)
+                vid_kw["height"] = int(h)
+            dur = media.get("duration")
+            if dur:
+                vid_kw["duration"] = int(dur)
+            if cap:
+                vid_kw["caption"] = cap[:1024]
+                vid_kw["parse_mode"] = "HTML"
+            try:
+                await context.bot.send_video(**vid_kw)
+            except TelegramError as send_err:
+                logger.warning("IG reel send_video failed (%s); sending as document", send_err)
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=path,
+                    filename=os.path.basename(path),
+                    message_thread_id=thread_id,
+                    write_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
+                    read_timeout=TELEGRAM_MEDIA_WRITE_TIMEOUT,
+                )
+        finally:
+            await asyncio.to_thread(self.ig_reels.cleanup_files, media_files)
+            try:
+                await context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=status.message_id,
+                    api_kwargs=_forum_topic_api_kwargs(thread_id),
+                )
+            except Exception:
+                pass
 
     async def _process_tiktok(
         self,
