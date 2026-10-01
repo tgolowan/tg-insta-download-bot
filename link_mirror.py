@@ -220,7 +220,7 @@ def replace_instagram_hosts_checked(
         if not u or not is_instagram_link(u):
             return raw_full
 
-        from preview_check import is_instagram_story, pick_working_mirror
+        from preview_check import is_instagram_story, is_photo_post, pick_working_mirror
 
         if not verify_preview:
             host = (
@@ -240,7 +240,9 @@ def replace_instagram_hosts_checked(
 
         picked = pick_working_mirror(u, mirror_hosts, timeout=preview_timeout)
         if not picked:
-            if fallback_unchecked:
+            # For /p/ posts, a dead unchecked mirror is worse than an honest failure
+            # notice. Mirrors commonly return placeholders for login/age-gated posts.
+            if fallback_unchecked and not is_photo_post(u):
                 # pick_working_mirror already probed hosts — avoid a second slow pass on Railway.
                 host = mirror_host_for_instagram_url(u, mirror_hosts)
                 changed = True

@@ -46,7 +46,12 @@ from link_mirror import (
     replace_instagram_hosts_checked,
 )
 from instagram_reel_downloader import InstagramReelDownloader
-from preview_check import is_instagram_reel, is_instagram_story, mirror_host_chain
+from preview_check import (
+    is_instagram_reel,
+    is_instagram_story,
+    is_photo_post,
+    mirror_host_chain,
+)
 from tiktok_downloader import TikTokDownloader, compress_for_telegram_upload
 from tiktok_urls import extract_tiktok_urls
 
@@ -168,6 +173,9 @@ class SocialLinksBot:
                 "Instagram mirror probes exceeded %.0fs budget — using fast mirror",
                 IG_MIRROR_BUDGET_SECONDS,
             )
+            ig_urls = extract_instagram_urls(body)
+            if ig_urls and all(is_photo_post(url) for url in ig_urls):
+                return body, False
         except Exception as exc:
             logger.warning("Instagram mirror probes failed: %s — using fast mirror", exc)
         return await asyncio.to_thread(
@@ -348,10 +356,6 @@ class SocialLinksBot:
                 )
             else:
                 mirror_text, mirrored = await self._mirror_instagram_body(body)
-                if ig_urls and not mirrored:
-                    mirror_text, mirrored = await asyncio.to_thread(
-                        fast_mirror_instagram_text, body, self._mirror_hosts
-                    )
 
         if mirrored:
             if LOG_LINK_ACTIVITY:
@@ -390,7 +394,12 @@ class SocialLinksBot:
                 hint = (
                     "Story share links often don't work with preview mirrors — open them in the Instagram app."
                     if has_story_link
-                    else "Try again in a minute or paste a direct reel/post URL."
+                    else (
+                        "This post may require an Instagram login, be age-restricted/private, "
+                        "or be unavailable to public preview mirrors."
+                        if any(is_photo_post(url) for url in ig_urls)
+                        else "Try again in a minute or paste a direct reel/post URL."
+                    )
                 )
                 await message.reply_text(
                     "⚠️ Could not mirror this Instagram link (no preview mirror responded). "
